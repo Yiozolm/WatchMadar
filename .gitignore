@@ -1,0 +1,13 @@
+# Python runtime files
+__pycache__/
+*.py[cod]
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+
+# Local runtime output
+*.log
+metrics.local.json

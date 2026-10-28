@@ -1,0 +1,53 @@
+{
+  "cluster": {
+    "name": "Madar HPC",
+    "status": "healthy",
+    "data_source": "demo",
+    "uptime": "42d 08h",
+    "last_updated": "2026-10-28T16:47:00Z",
+    "refresh_seconds": 10,
+    "gpu_total": 32,
+    "gpu_online": 32,
+    "gpu_utilization": 67,
+    "active_jobs": 18,
+    "queued_jobs": 7,
+    "storage_used_tb": 18.4,
+    "storage_total_tb": 28.0
+  },
+  "gpus": [
+    {"id": "GPU 01", "node": "madar-gpu-01", "model": "NVIDIA H100 SXM", "utilization": 92, "memory_used": 67, "memory_total": 80, "temperature": 71, "power": 510, "power_limit": 700, "status": "busy", "process": "train-llama-70b", "owner": "siyuan"},
+    {"id": "GPU 02", "node": "madar-gpu-01", "model": "NVIDIA H100 SXM", "utilization": 88, "memory_used": 74, "memory_total": 80, "temperature": 69, "power": 486, "power_limit": 700, "status": "busy", "process": "train-llama-70b", "owner": "siyuan"},
+    {"id": "GPU 03", "node": "madar-gpu-01", "model": "NVIDIA H100 SXM", "utilization": 46, "memory_used": 31, "memory_total": 80, "temperature": 62, "power": 312, "power_limit": 700, "status": "busy", "process": "embedding-batch", "owner": "rui"},
+    {"id": "GPU 04", "node": "madar-gpu-01", "model": "NVIDIA H100 SXM", "utilization": 0, "memory_used": 0, "memory_total": 80, "temperature": 35, "power": 72, "power_limit": 700, "status": "idle", "process": "Available", "owner": ""},
+    {"id": "GPU 05", "node": "madar-gpu-02", "model": "NVIDIA H100 SXM", "utilization": 81, "memory_used": 59, "memory_total": 80, "temperature": 68, "power": 458, "power_limit": 700, "status": "busy", "process": "rlhf-rollout", "owner": "min"},
+    {"id": "GPU 06", "node": "madar-gpu-02", "model": "NVIDIA H100 SXM", "utilization": 76, "memory_used": 52, "memory_total": 80, "temperature": 66, "power": 441, "power_limit": 700, "status": "busy", "process": "rlhf-rollout", "owner": "min"},
+    {"id": "GPU 07", "node": "madar-gpu-02", "model": "NVIDIA H100 SXM", "utilization": 63, "memory_used": 48, "memory_total": 80, "temperature": 64, "power": 390, "power_limit": 700, "status": "busy", "process": "vision-pretrain", "owner": "chen"},
+    {"id": "GPU 08", "node": "madar-gpu-02", "model": "NVIDIA H100 SXM", "utilization": 12, "memory_used": 7, "memory_total": 80, "temperature": 42, "power": 120, "power_limit": 700, "status": "busy", "process": "notebook", "owner": "you"},
+    {"id": "GPU 09", "node": "madar-gpu-03", "model": "NVIDIA A100 80GB", "utilization": 98, "memory_used": 78, "memory_total": 80, "temperature": 73, "power": 395, "power_limit": 400, "status": "busy", "process": "diffusion-finetune", "owner": "lina"},
+    {"id": "GPU 10", "node": "madar-gpu-03", "model": "NVIDIA A100 80GB", "utilization": 94, "memory_used": 77, "memory_total": 80, "temperature": 72, "power": 388, "power_limit": 400, "status": "busy", "process": "diffusion-finetune", "owner": "lina"},
+    {"id": "GPU 11", "node": "madar-gpu-03", "model": "NVIDIA A100 80GB", "utilization": 0, "memory_used": 0, "memory_total": 80, "temperature": 34, "power": 61, "power_limit": 400, "status": "idle", "process": "Available", "owner": ""},
+    {"id": "GPU 12", "node": "madar-gpu-03", "model": "NVIDIA A100 80GB", "utilization": 0, "memory_used": 0, "memory_total": 80, "temperature": 35, "power": 63, "power_limit": 400, "status": "idle", "process": "Available", "owner": ""}
+  ],
+  "jobs": [
+    {"id": "job-8421", "name": "train-llama-70b", "owner": "siyuan", "partition": "gpu-long", "gpus": 2, "elapsed": "08:42:18", "status": "RUNNING"},
+    {"id": "job-8416", "name": "diffusion-finetune", "owner": "lina", "partition": "gpu", "gpus": 2, "elapsed": "04:17:52", "status": "RUNNING"},
+    {"id": "job-8409", "name": "rlhf-rollout", "owner": "min", "partition": "gpu-long", "gpus": 2, "elapsed": "02:31:05", "status": "RUNNING"},
+    {"id": "job-8432", "name": "sweep-vit-large", "owner": "kai", "partition": "gpu", "gpus": 4, "elapsed": "—", "status": "PENDING"}
+  ],
+  "storage": {
+    "quota_tb": 28.0,
+    "used_tb": 18.4,
+    "paths": [
+      {"path": "/home", "used_tb": 7.8, "quota_tb": 12.0, "kind": "home"},
+      {"path": "/scratch", "used_tb": 9.4, "quota_tb": 14.0, "kind": "scratch"},
+      {"path": "/datasets", "used_tb": 1.2, "quota_tb": 2.0, "kind": "datasets"}
+    ],
+    "users": [
+      {"user": "siyuan", "used_tb": 3.42, "quota_tb": 4.0, "files": 182403},
+      {"user": "lina", "used_tb": 2.18, "quota_tb": 3.0, "files": 97412},
+      {"user": "min", "used_tb": 1.86, "quota_tb": 3.0, "files": 84309},
+      {"user": "chen", "used_tb": 1.44, "quota_tb": 2.0, "files": 67812},
+      {"user": "rui", "used_tb": 0.92, "quota_tb": 2.0, "files": 32588}
+    ]
+  }
+}
