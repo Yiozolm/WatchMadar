@@ -27,7 +27,7 @@
         </nav>
         <div class="sidebar-footer">
           <div class="connection" id="sidebarConnection"><i></i><div><strong id="collectorStatus">未连接</strong><small id="collectorDetail">等待连接服务器…</small></div></div>
-          <div class="profile"><div class="avatar">Y</div><div><strong>you</strong><small>Researcher</small></div><span>•••</span></div>
+          <div class="profile"><div class="avatar" id="sidebarAvatar">U</div><div><strong id="sidebarUser">SSH User</strong><small id="sidebarHome">未连接</small></div><span>•••</span></div>
         </div>
       </aside>
 
@@ -42,7 +42,7 @@
         </header>
 
         <section class="page-head">
-          <div><p class="eyebrow">MADAR HPC / RESOURCE MONITOR</p><h1>你好，<span>you</span> <small>✦</small></h1><p class="subtitle">一眼掌握集群算力与目录空间的实时状态。</p></div>
+          <div><p class="eyebrow">MADAR HPC / RESOURCE MONITOR</p><h1>你好，<span id="greetingUser">User</span> <small>✦</small></h1><p class="subtitle">一眼掌握集群算力与 SSH 用户目录空间的实时状态。</p></div>
           <div class="cluster-badge" id="clusterBadge"><div class="pulse"></div><div><strong>Madar Cluster</strong><span><b id="clusterStatus">未连接</b> · uptime <span id="uptime">—</span></span></div><span class="chevron">⌄</span></div>
         </section>
 
@@ -51,7 +51,7 @@
           <article class="stat-card accent-green"><div class="stat-top"><span>GPU 在线</span><span class="stat-icon">⌁</span></div><div class="stat-value"><strong id="gpuOnline">—</strong><small>/ <span id="gpuTotal">—</span></small></div><div class="stat-foot"><span class="trend up" id="gpuFootStatus">等待数据</span><span>Slurm allocation</span></div></article>
           <article class="stat-card accent-blue"><div class="stat-top"><span>平均利用率</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="gpuUtil">—</strong><small>%</small></div><div class="mini-chart" id="utilSpark"></div><div class="stat-foot"><span class="trend up" id="utilFootStatus">等待数据</span><span>cluster load</span></div></article>
           <article class="stat-card accent-purple"><div class="stat-top"><span>运行中任务</span><span class="stat-icon">▤</span></div><div class="stat-value"><strong id="activeJobs">—</strong><small> jobs</small></div><div class="stat-foot"><span class="trend neutral" id="queuedJobsFoot">— queued</span><span>gpu / interactive</span></div></article>
-          <article class="stat-card accent-orange"><div class="stat-top"><span>存储使用</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="storageUsed">—</strong><small> TB</small></div><div class="storage-track"><span id="storageTrack" style="width:0%"></span></div><div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">of — TB quota</span></div></article>
+          <article class="stat-card accent-orange"><div class="stat-top"><span>我的目录占用</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="storageUsed">—</strong><small id="storageUnit"> GB</small></div><div class="storage-track"><span id="storageTrack" style="width:0%"></span></div><div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">磁盘剩余 —</span></div></article>
         </section>
 
         <section class="content-grid">
@@ -63,16 +63,16 @@
           </article>
 
           <article class="panel storage-panel" id="storageSection">
-            <div class="panel-head"><div><p class="eyebrow">STORAGE / QUOTA</p><h2>目录空间</h2></div><button class="more-button" title="更多选项">···</button></div>
-            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span>已使用</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small>TB</small></strong><span>of <b id="storageTotal2">— TB</b> allocated</span><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
+            <div class="panel-head"><div><p class="eyebrow">SSH USER / HOME STORAGE</p><h2>用户目录空间</h2></div><button class="more-button" title="更多选项">···</button></div>
+            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span id="storageDonutLabel">用户占比</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong><span id="storageTotal2">所在分区可用 —</span><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
             <div class="storage-paths" id="storagePaths"></div>
-            <div class="panel-foot"><span>实时文件系统配额</span><button class="text-button" data-view="storage">管理存储 <span>→</span></button></div>
+            <div class="panel-foot"><span id="storageHomeFoot">主目录 <b>—</b></span><button class="text-button" data-view="storage">查看子目录 <span>→</span></button></div>
           </article>
         </section>
 
         <section class="bottom-grid">
           <article class="panel jobs-panel" id="jobsSection"><div class="panel-head"><div><p class="eyebrow">SCHEDULER / SLURM</p><h2>任务队列</h2></div><button class="text-button" data-view="jobs">全部任务 <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>任务</th><th>用户</th><th>分区</th><th>GPU</th><th>运行时间</th><th>状态</th></tr></thead><tbody id="jobsTable"></tbody></table></div></article>
-          <article class="panel users-panel" id="usersSection"><div class="panel-head"><div><p class="eyebrow">STORAGE / TOP USERS</p><h2>用户目录排行</h2></div><button class="more-button">···</button></div><div id="usersList"></div></article>
+          <article class="panel users-panel" id="usersSection"><div class="panel-head"><div><p class="eyebrow">HOME DIRECTORY / TOP SUBDIRS</p><h2>主目录空间明细</h2></div><button class="more-button">···</button></div><div id="usersList"></div></article>
         </section>
 
         <section class="settings-section" id="settingsSection">

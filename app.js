@@ -42,6 +42,18 @@ const DISCONNECTED_DATA = {
   storage: { quota_tb: 0, used_tb: 0, paths: [], users: [] },
 };
 
+function formatSizeParts(gb) {
+  const val = Number(gb) || 0;
+  if (val >= 1000) return { number: (val / 1000).toFixed(2), unit: "TB" };
+  if (val >= 1) return { number: val.toFixed(1), unit: "GB" };
+  return { number: Math.max(val * 1000, 0).toFixed(0), unit: "MB" };
+}
+
+function formatSizeText(gb) {
+  const { number, unit } = formatSizeParts(gb);
+  return `${number} ${unit}`;
+}
+
 function renderStats() {
   const { cluster, storage } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
@@ -57,6 +69,10 @@ function renderStats() {
   $("#metricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : "未连接";
 
   if (!isLive) {
+    $("#greetingUser").textContent = "User";
+    $("#sidebarUser").textContent = "SSH User";
+    $("#sidebarHome").textContent = "未连接";
+    $("#sidebarAvatar").textContent = "U";
     $("#gpuOnline").textContent = "—";
     $("#gpuTotal").textContent = "—";
     $("#gpuNavCount").textContent = "—";
@@ -67,13 +83,16 @@ function renderStats() {
     $("#gpuFootStatus").textContent = "未连接";
     $("#utilFootStatus").textContent = "未连接";
     $("#storageUsed").textContent = "—";
+    $("#storageUnit").textContent = " GB";
     $("#storagePercent").textContent = "—";
-    $("#storageQuotaFoot").textContent = "of — TB quota";
+    $("#storageQuotaFoot").textContent = "磁盘剩余 —";
     $("#storageTrack").style.width = "0%";
     $("#storageDonut").style.background = `conic-gradient(#233d4c 0 100%)`;
     $("#storageDonutValue").textContent = "—";
     $("#storageUsed2").textContent = "—";
-    $("#storageTotal2").textContent = "— TB";
+    $("#storageUnit2").textContent = "GB";
+    $("#storageTotal2").textContent = "所在分区可用 —";
+    $("#storageHomeFoot").innerHTML = "主目录 <b>—</b>";
     $("#storageHealthState").innerHTML = "<i></i>未连接";
     $("#lastUpdated").textContent = "未连接";
     $("#uptime").textContent = "—";
@@ -81,6 +100,13 @@ function renderStats() {
     $("#utilSpark").innerHTML = "";
     return;
   }
+
+  const sshUser = storage.user || "user";
+  const homePath = storage.home_path || `/home/${sshUser}`;
+  $("#greetingUser").textContent = sshUser;
+  $("#sidebarUser").textContent = sshUser;
+  $("#sidebarHome").textContent = homePath;
+  $("#sidebarAvatar").textContent = sshUser.slice(0, 1).toUpperCase();
 
   $("#gpuOnline").textContent = cluster.gpu_online;
   $("#gpuTotal").textContent = cluster.gpu_total;
@@ -91,16 +117,27 @@ function renderStats() {
   $("#queuedJobsFoot").textContent = `${cluster.queued_jobs} queued`;
   $("#gpuFootStatus").textContent = "在线";
   $("#utilFootStatus").textContent = "实时分配率";
-  $("#storageUsed").textContent = storage.used_tb.toFixed(1);
-  const pct = storage.quota_tb > 0 ? (storage.used_tb / storage.quota_tb) * 100 : 0;
-  $("#storagePercent").textContent = `${pct.toFixed(1)}%`;
-  $("#storageQuotaFoot").textContent = `of ${storage.quota_tb.toFixed(1)} TB quota`;
-  $("#storageTrack").style.width = `${pct}%`;
-  $("#storageDonut").style.background = `conic-gradient(var(--orange) 0 ${pct}%, #233d4c ${pct}% 100%)`;
-  $("#storageDonutValue").textContent = `${pct.toFixed(1)}%`;
-  $("#storageUsed2").textContent = storage.used_tb.toFixed(1);
-  $("#storageTotal2").textContent = `${storage.quota_tb.toFixed(1)} TB`;
-  $("#storageHealthState").innerHTML = "<i></i>空间健康";
+
+  const homeUsedGb = storage.home_used_gb ?? (storage.used_tb * 1000);
+  const fsTotalGb = storage.fs_total_gb ?? (storage.quota_tb * 1000);
+  const fsAvailGb = storage.fs_avail_gb ?? Math.max(fsTotalGb - (storage.fs_used_gb ?? homeUsedGb), 0);
+  const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0);
+  const homeSize = formatSizeParts(homeUsedGb);
+  const userPct = fsTotalGb > 0 ? Math.min((homeUsedGb / fsTotalGb) * 100, 100) : 0;
+
+  $("#storageUsed").textContent = isInitialScan ? "扫描中" : homeSize.number;
+  $("#storageUnit").textContent = isInitialScan ? "" : ` ${homeSize.unit}`;
+  $("#storagePercent").textContent = homePath;
+  $("#storageQuotaFoot").textContent = `可用 ${formatSizeText(fsAvailGb)}`;
+  $("#storageTrack").style.width = `${Math.max(userPct, homeUsedGb > 0 ? 2 : 0)}%`;
+
+  $("#storageDonut").style.background = `conic-gradient(var(--orange) 0 ${userPct}%, #233d4c ${userPct}% 100%)`;
+  $("#storageDonutValue").textContent = isInitialScan ? "…" : `${userPct.toFixed(1)}%`;
+  $("#storageUsed2").textContent = isInitialScan ? "扫描中" : homeSize.number;
+  $("#storageUnit2").textContent = isInitialScan ? "" : homeSize.unit;
+  $("#storageTotal2").innerHTML = `分区可用 <b>${escapeHtml(formatSizeText(fsAvailGb))}</b> / 共 ${escapeHtml(formatSizeText(fsTotalGb))}`;
+  $("#storageHomeFoot").innerHTML = `主目录 <b>${escapeHtml(homePath)}</b>`;
+  $("#storageHealthState").innerHTML = storage.scanning ? "<i></i>后台统计目录中…" : "<i></i>用户目录正常";
   $("#lastUpdated").textContent = formatTime(cluster.last_updated);
   $("#uptime").textContent = cluster.uptime;
   $("#clusterStatus").textContent = cluster.status === "healthy" ? "运行正常" : "需关注";
@@ -136,17 +173,33 @@ function renderStorage() {
   const isLive = Boolean(state.data.cluster.connected && state.data.cluster.data_source === "ssh");
   if (!isLive) {
     $("#storagePaths").innerHTML = `<div class="empty-state">未连接服务器，暂无目录空间数据</div>`;
-    $("#usersList").innerHTML = `<div class="empty-state">未连接服务器，暂无用户目录数据</div>`;
+    $("#usersList").innerHTML = `<div class="empty-state">未连接服务器，暂无主目录明细</div>`;
     return;
   }
-  const paths = state.data.storage.paths;
+  const paths = state.data.storage.paths || [];
   $("#storagePaths").innerHTML = paths.map((item) => {
-    const pct = Math.min((item.used_tb / item.quota_tb) * 100, 100);
-    return `<div class="path-row"><span class="path-name">${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${pct}%"></span></div><span class="path-value">${item.used_tb.toFixed(1)} TB</span></div>`;
+    const usedGb = item.used_gb ?? (item.used_tb * 1000);
+    const quotaGb = item.quota_gb ?? (item.quota_tb * 1000);
+    const pct = item.pct ?? Math.min((usedGb / Math.max(quotaGb, 1)) * 100, 100);
+    return `<div class="path-row" title="${escapeHtml(item.path)}"><span class="path-name">${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%"></span></div><span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span></div>`;
   }).join("");
-  const users = state.data.storage.users;
-  const max = Math.max(...users.map((item) => item.quota_tb), 1);
-  $("#usersList").innerHTML = users.map((item, index) => `<div class="user-row"><span class="user-rank">0${index + 1}</span><span class="user-avatar">${escapeHtml(item.user.slice(0, 1).toUpperCase())}</span><span class="user-name">${escapeHtml(item.user)}<div class="user-bar"><span style="width:${Math.min(item.used_tb / max * 100, 100)}%"></span></div></span><span class="user-amount">${item.used_tb.toFixed(2)} TB</span></div>`).join("");
+
+  const subdirs = state.data.storage.subdirs || [];
+  if (!subdirs.length) {
+    const msg = state.data.storage.scanning ? "正在后台统计主目录各文件夹大小…" : "主目录为空或暂无子目录明细";
+    $("#usersList").innerHTML = `<div class="empty-state">${msg}</div>`;
+    return;
+  }
+  $("#usersList").innerHTML = subdirs.map((item, index) => {
+    const icon = item.name.startsWith(".") ? "⚙" : item.name.startsWith("~") ? "📄" : "📁";
+    const sizeLabel = item.used_gb >= 1 ? `${item.used_gb.toFixed(2)} GB` : `${item.used_mb.toFixed(1)} MB`;
+    return `<div class="user-row" title="${escapeHtml(item.name)} (${item.share_pct}%)">
+      <span class="user-rank">${String(index + 1).padStart(2, "0")}</span>
+      <span class="user-avatar">${icon}</span>
+      <span class="user-name">${escapeHtml(item.name)}<div class="user-bar"><span style="width:${Math.max(item.share_pct, 2)}%"></span></div></span>
+      <span class="user-amount">${escapeHtml(sizeLabel)}</span>
+    </div>`;
+  }).join("");
 }
 
 function renderJobs() {
@@ -190,6 +243,10 @@ async function fetchMetrics(showToast = false, force = false) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
     render();
+    if (state.data.storage?.scanning) {
+      clearTimeout(fetchMetrics.scanTimer);
+      fetchMetrics.scanTimer = setTimeout(() => fetchMetrics(false, false), 3500);
+    }
     if (showToast) {
       const isLive = Boolean(state.data.cluster?.connected);
       showToastMessage(isLive ? "数据已刷新" : "未连接到集群服务器", !isLive);
