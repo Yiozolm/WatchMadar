@@ -341,32 +341,52 @@ def load_metrics() -> dict:
         return payload
 
 
+_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def _write_bytes(self, payload: bytes, content_type: str, cache_control: str | None = None) -> None:
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except _DISCONNECT_ERRORS:
+            return
 
     def do_GET(self):  # noqa: N802 - stdlib API name
         path = urlparse(self.path).path
         if path == "/api/metrics":
             payload = json.dumps(load_metrics(), ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
             return
 
         if path == "/health":
-            payload = b'{"status":"ok"}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_bytes(b'{"status":"ok"}', "application/json")
             return
 
-        super().do_GET()
+        try:
+            super().do_GET()
+        except _DISCONNECT_ERRORS:
+            return
+
+    def handle(self):
+        try:
+            super().handle()
+        except _DISCONNECT_ERRORS:
+            return
+
+    def finish(self):
+        try:
+            super().finish()
+        except _DISCONNECT_ERRORS:
+            return
 
     def log_message(self, fmt, *args):
         if os.environ.get("MADAR_DASHBOARD_QUIET") != "1":

@@ -1,4 +1,4 @@
-const state = { data: null, gpuFilter: "all", refreshMs: 10000, timer: null, activeView: "overview" };
+const state = { data: null, gpuFilter: "all", refreshMs: 10000, timer: null, activeView: "overview", inFlight: false };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -83,6 +83,8 @@ function renderJobs() {
 function render() { renderStats(); renderGpus(); renderStorage(); renderJobs(); }
 
 async function fetchMetrics(showToast = false) {
+  if (state.inFlight && !showToast) return;
+  state.inFlight = true;
   try {
     const response = await fetch(`/api/metrics?_=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -92,6 +94,8 @@ async function fetchMetrics(showToast = false) {
   } catch (error) {
     console.error(error);
     if (showToast) showToastMessage("刷新失败，请检查采集服务", true);
+  } finally {
+    state.inFlight = false;
   }
 }
 
