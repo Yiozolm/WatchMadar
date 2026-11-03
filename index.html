@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="shortcut icon" type="image/png" href="logo.png" />
     <link rel="apple-touch-icon" href="logo.png" />
-    <link rel="stylesheet" href="styles.css?v=5" />
+    <link rel="stylesheet" href="styles.css?v=7" />
   </head>
   <body>
     <div class="app-shell">
@@ -21,10 +21,10 @@
         <nav class="nav-list" aria-label="主导航">
           <button class="nav-item active" data-view="overview"><span class="nav-icon">◫</span><span>总览</span><em>01</em></button>
           <button class="nav-item" data-view="gpu"><span class="nav-icon">▦</span><span>GPU 节点</span><em id="gpuNavCount">—</em></button>
-          <button class="nav-item" data-view="storage"><span class="nav-icon">◉</span><span>存储空间</span><em>03</em></button>
+          <button class="nav-item" data-view="storage"><span class="nav-icon">◉</span><span>存储空间</span><em id="storageNavCount">—</em></button>
         </nav>
         <div class="sidebar-label second-label">SYSTEM</div>
-        <nav class="nav-list">
+        <nav class="nav-list" aria-label="系统导航">
           <button class="nav-item" data-view="jobs"><span class="nav-icon">≡</span><span>任务队列</span><em id="jobNavCount">—</em></button>
           <button class="nav-item" data-view="settings"><span class="nav-icon">⊙</span><span>采集设置</span></button>
         </nav>
@@ -45,89 +45,447 @@
         </header>
 
         <section class="page-head">
-          <div><p class="eyebrow">MADAR HPC / RESOURCE MONITOR</p><h1>你好，<span id="greetingUser">User</span> <small>✦</small></h1><p class="subtitle">一眼掌握集群算力与 SSH 用户目录空间的实时状态。</p></div>
-          <div class="cluster-badge" id="clusterBadge"><div class="pulse"></div><div><strong>Madar Cluster</strong><span><b id="clusterStatus">未连接</b> · uptime <span id="uptime">—</span></span></div><span class="chevron">⌄</span></div>
+          <div>
+            <p class="eyebrow" id="pageEyebrow">MADAR HPC / RESOURCE MONITOR</p>
+            <h1 id="pageHeading">你好，<span id="greetingUser">User</span> <small>✦</small></h1>
+            <p class="subtitle" id="pageSubtitle">一眼掌握集群算力与 SSH 用户目录空间的整体实时状态。</p>
+          </div>
+          <div class="cluster-badge" id="clusterBadge">
+            <div class="pulse"></div>
+            <div><strong>Madar Cluster</strong><span><b id="clusterStatus">未连接</b> · uptime <span id="uptime">—</span></span></div>
+            <span class="chevron">⌄</span>
+          </div>
         </section>
 
         <div id="toast" class="toast" role="status"></div>
-        <section class="stats-grid" id="overviewStats">
-          <article class="stat-card accent-green"><div class="stat-top"><span>GPU 可用在线</span><span class="stat-icon">⌁</span></div><div class="stat-value"><strong id="gpuOnline">—</strong><small>/ <span id="gpuTotal">—</span></small></div><div class="stat-foot"><span class="trend up" id="gpuFootStatus">等待数据</span><span>Slurm allocation</span></div></article>
-          <article class="stat-card accent-blue"><div class="stat-top"><span>平均利用率</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="gpuUtil">—</strong><small>%</small></div><div class="mini-chart" id="utilSpark"></div><div class="stat-foot"><span class="trend up" id="utilFootStatus">等待数据</span><span>cluster load</span></div></article>
-          <article class="stat-card accent-purple"><div class="stat-top"><span>运行中任务</span><span class="stat-icon">▤</span></div><div class="stat-value"><strong id="activeJobs">—</strong><small> jobs</small></div><div class="stat-foot"><span class="trend neutral" id="queuedJobsFoot">— queued</span><span>gpu / interactive</span></div></article>
-          <article class="stat-card accent-orange"><div class="stat-top"><span>我的目录占用</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="storageUsed">—</strong><small id="storageUnit"> GB</small></div><div class="storage-track"><span id="storageTrack" style="width:0%"></span></div><div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">SSH 主目录</span></div></article>
-        </section>
 
-        <section class="content-grid">
-          <article class="panel gpu-panel" id="gpuSection">
-            <div class="panel-head"><div><p class="eyebrow">COMPUTE / GPU POOL</p><h2>GPU 使用情况</h2></div><div class="panel-tools"><div class="segmented" id="gpuFilter"><button class="selected" data-filter="all">全部</button><button data-filter="busy">使用中</button><button data-filter="idle">空闲</button><button data-filter="maintenance">维护/受限</button></div><button class="more-button" title="更多选项">···</button></div></div>
-            <div class="gpu-summary"><div class="legend"><span><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span><span><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span><span><i class="legend-dot purple"></i>受限专用 <b>ADMIN</b></span><span><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span></div><span class="small-muted" id="metricNote">未连接</span></div>
-            <div class="gpu-grid" id="gpuGrid"></div>
-            <div class="panel-foot"><span>显示 <b id="gpuShown">0</b> / <b id="gpuCount">0</b> 张 GPU</span><button class="text-button" data-view="gpu">查看全部节点 <span>→</span></button></div>
-          </article>
+        <!-- ==================== VIEW 1: OVERVIEW (首页总览) ==================== -->
+        <div class="view-page active" id="viewOverview" data-page="overview">
+          <section class="stats-grid" id="overviewStats">
+            <article class="stat-card accent-green clickable-card" data-view="gpu" title="点击查看具体 GPU 使用情况">
+              <div class="stat-top"><span>GPU 可用在线</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value"><strong id="gpuOnline">—</strong><small>/ <span id="gpuTotal">—</span></small></div>
+              <div class="stat-foot"><span class="trend up" id="gpuFootStatus">等待数据</span><span>Slurm allocation →</span></div>
+            </article>
+            <article class="stat-card accent-blue clickable-card" data-view="gpu" title="点击查看具体 GPU 使用情况">
+              <div class="stat-top"><span>平均利用率</span><span class="stat-icon">◒</span></div>
+              <div class="stat-value"><strong id="gpuUtil">—</strong><small>%</small></div>
+              <div class="mini-chart" id="utilSpark"></div>
+              <div class="stat-foot"><span class="trend up" id="utilFootStatus">等待数据</span><span>cluster load →</span></div>
+            </article>
+            <article class="stat-card accent-purple clickable-card" data-view="jobs" title="点击查看完整任务队列">
+              <div class="stat-top"><span>运行中任务</span><span class="stat-icon">▤</span></div>
+              <div class="stat-value"><strong id="activeJobs">—</strong><small> jobs</small></div>
+              <div class="stat-foot"><span class="trend neutral" id="queuedJobsFoot">— queued</span><span>gpu / interactive →</span></div>
+            </article>
+            <article class="stat-card accent-orange clickable-card" data-view="storage" title="点击查看用户目录空间明细">
+              <div class="stat-top"><span>我的目录占用</span><span class="stat-icon">◉</span></div>
+              <div class="stat-value"><strong id="storageUsed">—</strong><small id="storageUnit"> GB</small></div>
+              <div class="storage-track"><span id="storageTrack" style="width:0%"></span></div>
+              <div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">配额 50 GB →</span></div>
+            </article>
+          </section>
 
-          <article class="panel storage-panel" id="storageSection">
-            <div class="panel-head"><div><p class="eyebrow">SSH USER / HOME STORAGE</p><h2>用户目录空间</h2></div><button class="more-button" title="更多选项">···</button></div>
-            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span id="storageDonutLabel">共 50 GB</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong><span id="storageTotal2">总容量 50 GB</span><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
-            <div class="storage-paths" id="storagePaths"></div>
-            <div class="panel-foot"><span id="storageHomeFoot">主目录 <b>—</b></span><button class="text-button" data-view="storage">查看子目录 <span>→</span></button></div>
-          </article>
-        </section>
+          <section class="content-grid">
+            <!-- 首页：GPU 整体情况（替代单卡平铺） -->
+            <article class="panel gpu-overview-panel" id="gpuOverviewSection">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">COMPUTE / CLUSTER OVERVIEW</p>
+                  <h2>GPU 整体使用情况</h2>
+                </div>
+                <div class="panel-tools">
+                  <span class="small-muted" id="metricNote">未连接</span>
+                  <button class="text-button" data-view="gpu">具体单卡明细 <span>→</span></button>
+                </div>
+              </div>
 
-        <section class="bottom-grid">
-          <article class="panel jobs-panel" id="jobsSection"><div class="panel-head"><div><p class="eyebrow">SCHEDULER / SLURM</p><h2>任务队列</h2></div><button class="text-button" data-view="jobs">全部任务 <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>任务</th><th>用户</th><th>分区</th><th>GPU</th><th>运行时间</th><th>状态</th></tr></thead><tbody id="jobsTable"></tbody></table></div></article>
-          <article class="panel users-panel" id="usersSection"><div class="panel-head"><div><p class="eyebrow">HOME DIRECTORY / TOP SUBDIRS</p><h2>主目录空间明细</h2></div><button class="more-button">···</button></div><div id="usersList"></div></article>
-        </section>
+              <div class="gpu-stack-section">
+                <div class="gpu-stack-head">
+                  <span id="ovGpuSummaryLabel">集群算力池分配分布</span>
+                  <strong id="ovGpuAllocRatio">— / — 已分配</strong>
+                </div>
+                <div class="gpu-stack-bar" id="ovGpuStackBar">
+                  <span class="stack-seg busy" style="width:0%"></span>
+                  <span class="stack-seg idle" style="width:0%"></span>
+                  <span class="stack-seg maint" style="width:0%"></span>
+                  <span class="stack-seg restricted" style="width:0%"></span>
+                </div>
+                <div class="legend">
+                  <span><i class="legend-dot green"></i>使用中 <b id="ovLegendBusy">0</b></span>
+                  <span><i class="legend-dot gray"></i>空闲可用 <b id="ovLegendIdle">0</b></span>
+                  <span><i class="legend-dot orange"></i>维护/离线 <b id="ovLegendMaint">0</b></span>
+                  <span><i class="legend-dot purple"></i>受限专用 <b id="ovLegendRestricted">0</b></span>
+                </div>
+              </div>
 
-        <section class="settings-section" id="settingsSection">
-          <article class="panel settings-panel">
+              <div class="overview-kpi-grid">
+                <div class="mini-kpi green">
+                  <span class="mini-kpi-label">已分配运行 (RUNNING)</span>
+                  <strong id="ovGpuBusy">—</strong>
+                  <small id="ovGpuBusySub">等待数据</small>
+                </div>
+                <div class="mini-kpi blue">
+                  <span class="mini-kpi-label">空闲可调度 (AVAILABLE)</span>
+                  <strong id="ovGpuIdle">—</strong>
+                  <small id="ovGpuIdleSub">等待数据</small>
+                </div>
+                <div class="mini-kpi orange">
+                  <span class="mini-kpi-label">维护/排空 (DRAIN/DOWN)</span>
+                  <strong id="ovGpuMaint">—</strong>
+                  <small id="ovGpuMaintSub">等待数据</small>
+                </div>
+                <div class="mini-kpi purple">
+                  <span class="mini-kpi-label">受限专用 (ADMIN)</span>
+                  <strong id="ovGpuRestricted">—</strong>
+                  <small id="ovGpuRestrictedSub">等待数据</small>
+                </div>
+              </div>
+
+              <div class="gpu-overall-meta-grid">
+                <div class="storage-meta-card">
+                  <span class="meta-label">计算节点池健康度</span>
+                  <strong id="ovNodesHealthy">—</strong>
+                  <small id="ovNodesDetail">等待节点状态数据</small>
+                </div>
+                <div class="storage-meta-card">
+                  <span class="meta-label">主力加速卡规格</span>
+                  <strong id="ovGpuModels">—</strong>
+                  <small id="ovGpuPartitions">Slurm 计算分区</small>
+                </div>
+                <div class="storage-meta-card">
+                  <span class="meta-label">作业调度负载</span>
+                  <strong id="ovQueueSummary">—</strong>
+                  <small id="ovQueueSub">队列实时状态</small>
+                </div>
+              </div>
+
+              <div class="panel-foot">
+                <span>共 <b id="ovNodeCount">0</b> 个 GPU 节点 · <b id="gpuCount">0</b> 张加速卡</span>
+                <button class="text-button" data-view="gpu">查看全部 GPU 节点与单卡状态 <span>→</span></button>
+              </div>
+            </article>
+
+            <!-- 首页：用户目录空间整体情况（替代子目录明细列表） -->
+            <article class="panel storage-overview-panel" id="storageOverviewSection">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">SSH USER / HOME STORAGE OVERVIEW</p>
+                  <h2>用户目录空间概览</h2>
+                </div>
+                <button class="text-button" data-view="storage">子目录明细 <span>→</span></button>
+              </div>
+
+              <div class="storage-total">
+                <div class="donut" id="storageDonut">
+                  <div>
+                    <strong id="storageDonutValue">—</strong>
+                    <span id="storageDonutLabel">共 50 GB</span>
+                  </div>
+                </div>
+                <div class="storage-copy">
+                  <strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong>
+                  <span id="storageTotal2">总配额 50 GB</span>
+                  <div class="storage-health" id="storageHealthState"><i></i>未连接</div>
+                </div>
+              </div>
+
+              <div class="overview-storage-bar-wrap">
+                <div class="gpu-stack-head">
+                  <span>个人配额整体占用进度</span>
+                  <strong id="ovStorageQuotaRatio">— / 50 GB</strong>
+                </div>
+                <div class="quota-progress-bar">
+                  <span id="ovStorageQuotaFill" style="width:0%"></span>
+                </div>
+              </div>
+
+              <div class="storage-summary-cards">
+                <div class="storage-meta-card">
+                  <span class="meta-label">剩余可用配额</span>
+                  <strong id="ovStorageAvail">—</strong>
+                  <small id="ovStorageAvailSub">配额上限 50 GB</small>
+                </div>
+                <div class="storage-meta-card">
+                  <span class="meta-label">最大占用目录</span>
+                  <strong id="ovStorageTopDir">—</strong>
+                  <small id="ovStorageTopDirSub">等待目录统计</small>
+                </div>
+                <div class="storage-meta-card">
+                  <span class="meta-label">SSH 主目录路径</span>
+                  <strong id="ovStorageHomePath">—</strong>
+                  <small id="ovStorageUserLabel">未连接</small>
+                </div>
+                <div class="storage-meta-card">
+                  <span class="meta-label">底层文件系统总量</span>
+                  <strong id="ovStorageFsSummary">—</strong>
+                  <small id="ovStorageMountLabel">挂载卷状态</small>
+                </div>
+              </div>
+
+              <div class="panel-foot">
+                <span id="storageHomeFoot">主目录 <b>—</b></span>
+                <button class="text-button" data-view="storage">查看各子目录空间占用排行 <span>→</span></button>
+              </div>
+            </article>
+          </section>
+        </div>
+
+        <!-- ==================== VIEW 2: GPU NODES (具体 GPU 使用情况独立页) ==================== -->
+        <div class="view-page" id="viewGpu" data-page="gpu">
+          <section class="stats-grid subpage-stats">
+            <article class="stat-card accent-green">
+              <div class="stat-top"><span>可用在线 GPU</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value"><strong id="gpuPageOnline">—</strong><small>/ <span id="gpuPageTotal">—</span> 张</small></div>
+              <div class="stat-foot"><span class="trend up" id="gpuPageNodeFoot">— 个计算节点</span><span>集群总卡数</span></div>
+            </article>
+            <article class="stat-card accent-blue">
+              <div class="stat-top"><span>已分配使用中</span><span class="stat-icon">◒</span></div>
+              <div class="stat-value"><strong id="gpuPageBusy">—</strong><small>张 (<span id="gpuPageUtil">—</span>%)</small></div>
+              <div class="stat-foot"><span class="trend up" id="gpuPageBusyFoot">Slurm RUNNING</span><span>实时分配</span></div>
+            </article>
+            <article class="stat-card accent-purple">
+              <div class="stat-top"><span>当前空闲可调度</span><span class="stat-icon">✦</span></div>
+              <div class="stat-value"><strong id="gpuPageIdle">—</strong><small>张</small></div>
+              <div class="stat-foot"><span class="trend neutral" id="gpuPageIdleFoot">AVAILABLE</span><span>可立即申请</span></div>
+            </article>
+            <article class="stat-card accent-orange">
+              <div class="stat-top"><span>维护 / 受限专用</span><span class="stat-icon">⚠</span></div>
+              <div class="stat-value"><strong id="gpuPageUnavail">—</strong><small>张</small></div>
+              <div class="stat-foot"><span class="trend warn" id="gpuPageUnavailFoot">DRAIN / ADMIN</span><span>不可常规调度</span></div>
+            </article>
+          </section>
+
+          <article class="panel node-cards-panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">COLLECTOR / CONFIGURATION</p>
-                <h2>采集设置</h2>
+                <p class="eyebrow">COMPUTE NODES / FILTER BY NODE</p>
+                <h2>计算节点状态明细</h2>
               </div>
-              <span class="status-pill pending" id="settingsModeBadge">未连接</span>
+              <div class="panel-tools">
+                <span class="small-muted">点击任意节点卡片可筛选下方具体 GPU</span>
+                <button class="btn-chip selected" id="clearNodeFilterBtn" type="button">显示全部节点</button>
+              </div>
             </div>
-            <form id="settingsForm" class="settings-form">
-              <div class="settings-grid">
-                <label class="field">
-                  <span>自动刷新间隔</span>
-                  <select id="settingRefreshMs">
-                    <option value="15000">每 15 秒</option>
-                    <option value="30000">每 30 秒</option>
-                    <option value="60000" selected>每 1 分钟（默认）</option>
-                    <option value="120000">每 2 分钟</option>
-                    <option value="300000">每 5 分钟</option>
-                    <option value="0">暂停自动刷新</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>SSH 主机别名 / 地址</span>
-                  <input type="text" id="settingSshHost" placeholder="madar" />
-                </label>
-                <label class="field">
-                  <span>SSH 用户名（可选）</span>
-                  <input type="text" id="settingSshUser" placeholder="默认读取 ~/.ssh/config" />
-                </label>
-                <label class="field">
-                  <span>SSH 端口（可选）</span>
-                  <input type="text" id="settingSshPort" placeholder="默认 22 或 config 配置" />
-                </label>
-                <label class="field">
-                  <span>SSH 超时时间（秒）</span>
-                  <input type="number" id="settingSshTimeout" min="2" max="60" step="1" value="20" />
-                </label>
-              </div>
-              <div class="settings-status" id="settingsDiag">正在读取采集配置…</div>
-              <div class="settings-actions">
-                <button type="button" class="btn-secondary" id="testProbeButton">立即强制刷新</button>
-                <button type="submit" class="btn-primary" id="saveSettingsButton">保存并应用设置</button>
-              </div>
-            </form>
+            <div class="node-detail-grid" id="gpuPageNodeGrid"></div>
           </article>
-        </section>
-        <footer class="footer"><span>© 2026 Madar HPC Resource Monitor</span><span>Data refresh interval <b id="footerRefreshLabel">60s</b> · <a href="/api/metrics" target="_blank">API endpoint</a></span></footer>
+
+          <article class="panel gpu-panel" id="gpuSection">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">COMPUTE / PER-GPU ALLOCATION DETAILS</p>
+                <h2>具体 GPU 使用情况 <small class="filter-tag" id="gpuActiveNodeTag"></small></h2>
+              </div>
+              <div class="panel-tools">
+                <div class="segmented" id="gpuFilter">
+                  <button class="selected" data-filter="all">全部</button>
+                  <button data-filter="busy">使用中</button>
+                  <button data-filter="idle">空闲</button>
+                  <button data-filter="maintenance">维护/受限</button>
+                </div>
+              </div>
+            </div>
+            <div class="gpu-summary">
+              <div class="legend">
+                <span><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span>
+                <span><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span>
+                <span><i class="legend-dot purple"></i>受限专用 <b>ADMIN</b></span>
+                <span><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span>
+              </div>
+              <span class="small-muted" id="gpuPageMetricNote">Slurm GPU allocation</span>
+            </div>
+            <div class="gpu-grid" id="gpuGrid"></div>
+            <div class="panel-foot">
+              <span>当前显示 <b id="gpuShown">0</b> / <b id="gpuCountDetail">0</b> 张 GPU</span>
+              <button class="text-button" data-view="overview"><span>←</span> 返回总览首页</button>
+            </div>
+          </article>
+        </div>
+
+        <!-- ==================== VIEW 3: STORAGE (用户目录空间独立页) ==================== -->
+        <div class="view-page" id="viewStorage" data-page="storage">
+          <section class="stats-grid subpage-stats">
+            <article class="stat-card accent-orange">
+              <div class="stat-top"><span>主目录已用空间</span><span class="stat-icon">◉</span></div>
+              <div class="stat-value"><strong id="stPageUsed">—</strong><small id="stPageUsedUnit"> GB</small></div>
+              <div class="stat-foot"><span class="trend warn" id="stPageUsedPct">占配额 —%</span><span>个人目录已用</span></div>
+            </article>
+            <article class="stat-card accent-green">
+              <div class="stat-top"><span>剩余可用配额</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value"><strong id="stPageAvail">—</strong><small id="stPageAvailUnit"> GB</small></div>
+              <div class="stat-foot"><span class="trend up">配额上限 50 GB</span><span>个人主目录配额</span></div>
+            </article>
+            <article class="stat-card accent-purple">
+              <div class="stat-top"><span>最大单目录占用</span><span class="stat-icon">▤</span></div>
+              <div class="stat-value"><strong id="stPageTopSize">—</strong><small id="stPageTopUnit"></small></div>
+              <div class="stat-foot"><span class="trend neutral" id="stPageTopName">—</span><span id="stPageDirCount">共 0 个子目录</span></div>
+            </article>
+            <article class="stat-card accent-blue">
+              <div class="stat-top"><span>底层存储卷 (df)</span><span class="stat-icon">◒</span></div>
+              <div class="stat-value"><strong id="stPageFsUsed">—</strong><small id="stPageFsTotal">/ — TB</small></div>
+              <div class="stat-foot"><span id="stPageMount">挂载点 —</span><span>共享文件系统</span></div>
+            </article>
+          </section>
+
+          <section class="content-grid storage-page-grid">
+            <article class="panel storage-panel" id="storageSection">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">SSH USER / QUOTA DISTRIBUTION</p>
+                  <h2>目录配额占比分布</h2>
+                </div>
+                <button class="btn-chip" id="rescanStorageBtn" type="button" title="重新扫描目录大小">↻ 重新扫描</button>
+              </div>
+              <div class="storage-total">
+                <div class="donut" id="storageDetailDonut">
+                  <div>
+                    <strong id="storageDetailDonutValue">—</strong>
+                    <span id="storageDetailDonutLabel">共 50 GB</span>
+                  </div>
+                </div>
+                <div class="storage-copy">
+                  <strong><span id="storageDetailUsed">—</span> <small id="storageDetailUnit">GB</small></strong>
+                  <span id="storageDetailTotal">总容量 50 GB</span>
+                  <div class="storage-health" id="storageDetailHealth"><i></i>未连接</div>
+                </div>
+              </div>
+              <div class="storage-paths" id="storagePaths"></div>
+              <div class="panel-foot">
+                <span id="storageDetailFoot">主目录 <b>—</b></span>
+                <button class="text-button" data-view="overview"><span>←</span> 返回总览首页</button>
+              </div>
+            </article>
+
+            <article class="panel users-panel" id="usersSection">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">HOME DIRECTORY / TOP SUBDIRS</p>
+                  <h2>主目录空间明细 (Top 10)</h2>
+                </div>
+                <span class="small-muted" id="subdirsScanNote">按实际占用大小排序</span>
+              </div>
+              <div id="usersList"></div>
+              <div class="panel-foot">
+                <span class="small-muted">统计范围：一级子目录与隐藏目录 (如 .conda / .cache)</span>
+                <span class="small-muted">配额基准 <b>50 GB</b></span>
+              </div>
+            </article>
+          </section>
+        </div>
+
+        <!-- ==================== VIEW 4: JOBS (任务队列独立页) ==================== -->
+        <div class="view-page" id="viewJobs" data-page="jobs">
+          <section class="stats-grid subpage-stats">
+            <article class="stat-card accent-purple">
+              <div class="stat-top"><span>队列总任务数</span><span class="stat-icon">≡</span></div>
+              <div class="stat-value"><strong id="jobPageTotal">—</strong><small> jobs</small></div>
+              <div class="stat-foot"><span class="trend neutral">gpu / interactive</span><span>Slurm 队列</span></div>
+            </article>
+            <article class="stat-card accent-green">
+              <div class="stat-top"><span>运行中 (RUNNING)</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value"><strong id="jobPageRunning">—</strong><small> jobs</small></div>
+              <div class="stat-foot"><span class="trend up" id="jobPageGpuUsed">占用 — 张 GPU</span><span>正在执行</span></div>
+            </article>
+            <article class="stat-card accent-orange">
+              <div class="stat-top"><span>排队中 (PENDING)</span><span class="stat-icon">◒</span></div>
+              <div class="stat-value"><strong id="jobPagePending">—</strong><small> jobs</small></div>
+              <div class="stat-foot"><span class="trend warn">等待资源或优先级</span><span>排队等待</span></div>
+            </article>
+            <article class="stat-card accent-blue">
+              <div class="stat-top"><span>我的任务</span><span class="stat-icon">✦</span></div>
+              <div class="stat-value"><strong id="jobPageMine">—</strong><small> jobs</small></div>
+              <div class="stat-foot"><span id="jobPageMineUser">当前 SSH 用户</span><span>个人提交</span></div>
+            </article>
+          </section>
+
+          <article class="panel jobs-panel" id="jobsSection">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">SCHEDULER / SLURM QUEUE</p>
+                <h2>全部任务队列</h2>
+              </div>
+              <div class="panel-tools">
+                <input type="search" id="jobSearchInput" class="search-input" placeholder="搜索任务名 / 用户 / 节点…" />
+                <div class="segmented" id="jobFilter">
+                  <button class="selected" data-job-filter="all">全部</button>
+                  <button data-job-filter="RUNNING">运行中</button>
+                  <button data-job-filter="PENDING">排队中</button>
+                  <button data-job-filter="mine">我的任务</button>
+                </div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>任务</th><th>用户</th><th>分区</th><th>节点</th><th>GPU</th><th>运行时间</th><th>状态</th></tr>
+                </thead>
+                <tbody id="jobsTable"></tbody>
+              </table>
+            </div>
+            <div class="panel-foot">
+              <span>显示 <b id="jobsShownCount">0</b> / <b id="jobsTotalCount">0</b> 个任务</span>
+              <button class="text-button" data-view="overview"><span>←</span> 返回总览首页</button>
+            </div>
+          </article>
+        </div>
+
+        <!-- ==================== VIEW 5: SETTINGS (采集设置独立页) ==================== -->
+        <div class="view-page" id="viewSettings" data-page="settings">
+          <section class="settings-section" id="settingsSection">
+            <article class="panel settings-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">COLLECTOR / CONFIGURATION</p>
+                  <h2>采集设置</h2>
+                </div>
+                <span class="status-pill pending" id="settingsModeBadge">未连接</span>
+              </div>
+              <form id="settingsForm" class="settings-form">
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>自动刷新间隔</span>
+                    <select id="settingRefreshMs">
+                      <option value="15000">每 15 秒</option>
+                      <option value="30000">每 30 秒</option>
+                      <option value="60000" selected>每 1 分钟（默认）</option>
+                      <option value="120000">每 2 分钟</option>
+                      <option value="300000">每 5 分钟</option>
+                      <option value="0">暂停自动刷新</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>SSH 主机别名 / 地址</span>
+                    <input type="text" id="settingSshHost" placeholder="madar" />
+                  </label>
+                  <label class="field">
+                    <span>SSH 用户名（可选）</span>
+                    <input type="text" id="settingSshUser" placeholder="默认读取 ~/.ssh/config" />
+                  </label>
+                  <label class="field">
+                    <span>SSH 端口（可选）</span>
+                    <input type="text" id="settingSshPort" placeholder="默认 22 或 config 配置" />
+                  </label>
+                  <label class="field">
+                    <span>SSH 超时时间（秒）</span>
+                    <input type="number" id="settingSshTimeout" min="2" max="60" step="1" value="20" />
+                  </label>
+                </div>
+                <div class="settings-status" id="settingsDiag">正在读取采集配置…</div>
+                <div class="settings-actions">
+                  <button type="button" class="btn-secondary" id="testProbeButton">立即强制刷新</button>
+                  <button type="submit" class="btn-primary" id="saveSettingsButton">保存并应用设置</button>
+                </div>
+              </form>
+            </article>
+          </section>
+        </div>
+
+        <footer class="footer">
+          <span>© 2026 Madar HPC Resource Monitor</span>
+          <span>Data refresh interval <b id="footerRefreshLabel">60s</b> · <a href="/api/metrics" target="_blank">API endpoint</a></span>
+        </footer>
       </main>
     </div>
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=7"></script>
   </body>
 </html>

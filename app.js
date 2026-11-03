@@ -1,8 +1,19 @@
-const state = { data: null, gpuFilter: "all", refreshMs: 60000, timer: null, activeView: "overview", inFlight: false };
+const state = {
+  data: null,
+  gpuFilter: "all",
+  selectedNode: "all",
+  jobFilter: "all",
+  jobSearch: "",
+  refreshMs: 60000,
+  timer: null,
+  activeView: "overview",
+  inFlight: false,
+};
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#039;"}[ch]));
+const escapeHtml = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 
 const REASON_LABELS = {
   Priority: "优先级排队",
@@ -18,6 +29,39 @@ const REASON_LABELS = {
   AssocMaxJobsLimit: "账户任务上限",
 };
 
+const VIEW_META = {
+  overview: {
+    title: "总览",
+    eyebrow: "MADAR HPC / RESOURCE MONITOR",
+    headingHtml: (user) => `你好，<span id="greetingUser">${escapeHtml(user)}</span> <small>✦</small>`,
+    subtitle: "一眼掌握集群算力与 SSH 用户目录空间的整体实时状态。",
+  },
+  gpu: {
+    title: "GPU 节点",
+    eyebrow: "COMPUTE / GPU NODES & ALLOCATION",
+    headingHtml: () => `GPU 节点与单卡使用详情`,
+    subtitle: "查看各计算节点负载、单卡 Slurm 分配状态、运行作业及维护信息。",
+  },
+  storage: {
+    title: "存储空间",
+    eyebrow: "SSH USER / HOME DIRECTORY STORAGE",
+    headingHtml: () => `用户目录空间明细`,
+    subtitle: "查看 SSH 主目录 50 GB 配额分布、Top 10 子目录体积排行及底层存储卷状态。",
+  },
+  jobs: {
+    title: "任务队列",
+    eyebrow: "SCHEDULER / SLURM QUEUE",
+    headingHtml: () => `Slurm 任务队列`,
+    subtitle: "实时追踪集群运行中与排队中的 GPU 及交互式计算任务。",
+  },
+  settings: {
+    title: "采集设置",
+    eyebrow: "COLLECTOR / SSH CONFIGURATION",
+    headingHtml: () => `数据采集设置`,
+    subtitle: "配置 SSH 连接主机、超时参数与自动轮询刷新策略。",
+  },
+};
+
 function formatTime(iso) {
   if (!iso) return "刚刚更新";
   const date = new Date(iso);
@@ -25,13 +69,18 @@ function formatTime(iso) {
   return `更新于 ${date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
 }
 
-function utilClass(util) { return util >= 70 ? "" : util >= 30 ? "mid" : "low"; }
+function utilClass(util) {
+  return util >= 70 ? "" : util >= 30 ? "mid" : "low";
+}
 
 function renderSpark() {
+  const el = $("#utilSpark");
+  if (!el) return;
   const values = [45, 53, 50, 68, 57, 71, 66, 77, 67, 79, 74, 83];
-  const max = 90, min = 35;
+  const max = 90,
+    min = 35;
   const points = values.map((v, i) => `${(i / (values.length - 1)) * 100},${28 - ((v - min) / (max - min)) * 23}`).join(" ");
-  $("#utilSpark").innerHTML = `<svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${points}" fill="none" stroke="#5fa9ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="${points} 100,30 0,30" fill="url(#sparkFill)" stroke="none" opacity=".25"/><defs><linearGradient id="sparkFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5fa9ff"/><stop offset="1" stop-color="#5fa9ff" stop-opacity="0"/></linearGradient></defs></svg>`;
+  el.innerHTML = `<svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${points}" fill="none" stroke="#5fa9ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="${points} 100,30 0,30" fill="url(#sparkFill)" stroke="none" opacity=".25"/><defs><linearGradient id="sparkFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5fa9ff"/><stop offset="1" stop-color="#5fa9ff" stop-opacity="0"/></linearGradient></defs></svg>`;
 }
 
 const DISCONNECTED_DATA = {
@@ -45,7 +94,9 @@ const DISCONNECTED_DATA = {
     last_updated: null,
     gpu_total: 0,
     gpu_online: 0,
+    gpu_allocated: 0,
     gpu_maintenance: 0,
+    gpu_restricted: 0,
     gpu_idle: 0,
     gpu_utilization: 0,
     active_jobs: 0,
@@ -53,12 +104,14 @@ const DISCONNECTED_DATA = {
     storage_used_tb: 0,
     storage_total_tb: 0,
   },
+  nodes: [],
   gpus: [],
   jobs: [],
-  storage: { quota_tb: 0, used_tb: 0, paths: [], users: [] },
+  storage: { quota_tb: 0, used_tb: 0, paths: [], subdirs: [], users: [] },
 };
 
 const PIE_COLORS = ["#ffb46a", "#5fa9ff", "#ab88ff", "#38d6a1", "#f472b6", "#38bdf8"];
+const HOME_QUOTA_GB = 50;
 
 function formatSizeParts(gb) {
   const val = Number(gb) || 0;
@@ -76,12 +129,18 @@ function formatSizeText(gb) {
   return `${number} ${unit}`;
 }
 
-const HOME_QUOTA_GB = 50;
+function buildOverallDonutGradient(usedGb, quotaGb = HOME_QUOTA_GB) {
+  const capGb = Math.max(Number(quotaGb) || HOME_QUOTA_GB, 0.1);
+  const pct = Math.min(Math.max(((Number(usedGb) || 0) / capGb) * 100, 0), 100);
+  if (pct <= 0) return `conic-gradient(var(--track) 0 100%)`;
+  const color = pct >= 85 ? "var(--danger)" : pct >= 65 ? "var(--orange)" : "var(--green)";
+  return `conic-gradient(${color} 0 ${pct.toFixed(2)}%, var(--track) ${pct.toFixed(2)}% 100%)`;
+}
 
 function buildSubdirPieGradient(items, quotaGb = HOME_QUOTA_GB, totalUsedGb = 0) {
   const capGb = Math.max(Number(quotaGb) || HOME_QUOTA_GB, 0.1);
   if (!items || !items.length) {
-    const fallbackPct = Math.min(Math.max((Number(totalUsedGb) || 0) / capGb * 100, 0), 100);
+    const fallbackPct = Math.min(Math.max(((Number(totalUsedGb) || 0) / capGb) * 100, 0), 100);
     return `conic-gradient(var(--orange) 0 ${fallbackPct.toFixed(2)}%, var(--track) ${fallbackPct.toFixed(2)}% 100%)`;
   }
   let cursor = 0;
@@ -105,36 +164,58 @@ function buildSubdirPieGradient(items, quotaGb = HOME_QUOTA_GB, totalUsedGb = 0)
   return `conic-gradient(${stops.join(", ")})`;
 }
 
-function buildSubdirLinearGradient(items, quotaGb = HOME_QUOTA_GB) {
-  const capGb = Math.max(Number(quotaGb) || HOME_QUOTA_GB, 0.1);
-  if (!items || !items.length) return "";
-  let cursor = 0;
-  const stops = [];
-  items.forEach((item, idx) => {
-    const usedGb = Number(item.used_gb ?? (item.used_mb ? item.used_mb / 1000 : 0)) || 0;
-    const rawPct = (usedGb / capGb) * 100;
-    if (rawPct <= 0) return;
-    const start = cursor;
-    const end = Math.min(cursor + rawPct, 100);
-    cursor = end;
-    const color = PIE_COLORS[idx % PIE_COLORS.length];
-    stops.push(`${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`);
-  });
-  if (!stops.length) return "";
-  if (cursor < 100) {
-    stops.push(`var(--track) ${cursor.toFixed(2)}% 100%`);
-  }
-  return `linear-gradient(90deg, ${stops.join(", ")})`;
-}
-
 function formatIntervalLabel(ms) {
   if (!ms || ms <= 0) return "自动刷新已暂停";
   if (ms >= 60000 && ms % 60000 === 0) return `每 ${ms / 60000} 分钟刷新`;
   return `每 ${ms / 1000} 秒刷新`;
 }
 
-function renderStats() {
-  const { cluster, storage } = state.data;
+function getNodesList() {
+  if (state.data?.nodes?.length) return state.data.nodes;
+  const gpus = state.data?.gpus || [];
+  const map = new Map();
+  gpus.forEach((gpu) => {
+    if (!map.has(gpu.node)) {
+      map.set(gpu.node, {
+        name: gpu.node,
+        model: gpu.model || "GPU",
+        total: 0,
+        allocated: 0,
+        state: gpu.node_state || "IDLE",
+        partitions: [],
+        mode: gpu.status === "maintenance" ? gpu.substatus || "drain" : "normal",
+        reason: gpu.node_reason || "",
+      });
+    }
+    const entry = map.get(gpu.node);
+    entry.total += 1;
+    if (gpu.status === "busy") entry.allocated += 1;
+  });
+  return [...map.values()];
+}
+
+function getNodeBadgeInfo(node) {
+  const mode = node.mode || "normal";
+  if (mode === "down") return { cls: "down", label: "离线 DOWN" };
+  if (mode === "drain" || mode === "reserved") return { cls: "maint", label: node.allocated > 0 ? "排空中 DRAIN" : "维护中 MAINT" };
+  if (mode === "restricted") return { cls: "restricted", label: "受限 ADMIN" };
+  if (node.allocated >= node.total && node.total > 0) return { cls: "online", label: "满载 FULL" };
+  if (node.allocated > 0) return { cls: "online", label: "运行中 MIXED" };
+  return { cls: "idle", label: "空闲 IDLE" };
+}
+
+function updatePageHeader() {
+  const meta = VIEW_META[state.activeView] || VIEW_META.overview;
+  const isLive = Boolean(state.data?.cluster?.connected && state.data?.cluster?.data_source === "ssh");
+  const sshUser = isLive ? state.data?.storage?.user || "user" : "User";
+  $("#pageTitle").textContent = meta.title;
+  $("#pageEyebrow").textContent = meta.eyebrow;
+  $("#pageHeading").innerHTML = meta.headingHtml(sshUser);
+  $("#pageSubtitle").textContent = meta.subtitle;
+}
+
+function renderStatsAndOverview() {
+  const { cluster, storage, gpus = [] } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   const intervalLabel = formatIntervalLabel(state.refreshMs);
 
@@ -142,19 +223,23 @@ function renderStats() {
   $("#topRefreshState")?.classList.toggle("disconnected", !isLive);
   $("#clusterBadge")?.classList.toggle("disconnected", !isLive);
   $("#storageHealthState")?.classList.toggle("disconnected", !isLive);
+  $("#storageDetailHealth")?.classList.toggle("disconnected", !isLive);
 
   $("#collectorStatus").textContent = isLive ? "已连接" : "未连接";
-  $("#collectorDetail").textContent = isLive ? `Slurm probe · ${intervalLabel}` : (cluster.data_error || "未能获取到服务器数据");
+  $("#collectorDetail").textContent = isLive ? `Slurm probe · ${intervalLabel}` : cluster.data_error || "未能获取到服务器数据";
   $("#metricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : "未连接";
+  $("#gpuPageMetricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : "未连接";
+
+  updatePageHeader();
 
   if (!isLive) {
-    $("#greetingUser").textContent = "User";
     $("#sidebarUser").textContent = "SSH User";
     $("#sidebarHome").textContent = "未连接";
     $("#sidebarAvatar").textContent = "U";
     $("#gpuOnline").textContent = "—";
     $("#gpuTotal").textContent = "—";
     $("#gpuNavCount").textContent = "—";
+    $("#storageNavCount").textContent = "—";
     $("#gpuUtil").textContent = "—";
     $("#activeJobs").textContent = "—";
     $("#jobNavCount").textContent = "—";
@@ -165,7 +250,7 @@ function renderStats() {
     $("#storageUsed").textContent = "—";
     $("#storageUnit").textContent = " GB";
     $("#storagePercent").textContent = "—";
-    $("#storageQuotaFoot").textContent = "配额 50 GB";
+    $("#storageQuotaFoot").textContent = "配额 50 GB →";
     $("#storageTrack").style.width = "0%";
     $("#storageTrack").style.background = "";
     $("#storageDonut").style.background = `conic-gradient(var(--track) 0 100%)`;
@@ -173,31 +258,70 @@ function renderStats() {
     $("#storageDonutLabel").textContent = "共 50 GB";
     $("#storageUsed2").textContent = "—";
     $("#storageUnit2").textContent = "GB";
-    $("#storageTotal2").textContent = "总容量 50 GB";
+    $("#storageTotal2").textContent = "总配额 50 GB";
     $("#storageHomeFoot").innerHTML = "主目录 <b>—</b>";
     $("#storageHealthState").innerHTML = "<i></i>未连接";
     $("#lastUpdated").textContent = "未连接";
     $("#uptime").textContent = "—";
     $("#clusterStatus").textContent = "未连接";
     $("#utilSpark").innerHTML = "";
+
+    // Overview GPU reset
+    $("#ovGpuAllocRatio").textContent = "— / — 已分配";
+    $$("#ovGpuStackBar .stack-seg").forEach((el) => (el.style.width = "0%"));
+    $("#ovLegendBusy").textContent = "0";
+    $("#ovLegendIdle").textContent = "0";
+    $("#ovLegendMaint").textContent = "0";
+    $("#ovLegendRestricted").textContent = "0";
+    $("#ovGpuBusy").textContent = "—";
+    $("#ovGpuBusySub").textContent = "未连接";
+    $("#ovGpuIdle").textContent = "—";
+    $("#ovGpuIdleSub").textContent = "未连接";
+    $("#ovGpuMaint").textContent = "—";
+    $("#ovGpuMaintSub").textContent = "未连接";
+    $("#ovGpuRestricted").textContent = "—";
+    $("#ovGpuRestrictedSub").textContent = "未连接";
+    $("#ovNodesHealthy").textContent = "—";
+    $("#ovNodesDetail").textContent = "未连接";
+    $("#ovGpuModels").textContent = "—";
+    $("#ovGpuPartitions").textContent = "未连接";
+    $("#ovQueueSummary").textContent = "—";
+    $("#ovQueueSub").textContent = "未连接";
+    $("#ovNodeCount").textContent = "0";
+    $("#gpuCount").textContent = "0";
+
+    // Overview Storage reset
+    $("#ovStorageQuotaRatio").textContent = "— / 50 GB";
+    $("#ovStorageQuotaFill").style.width = "0%";
+    $("#ovStorageAvail").textContent = "—";
+    $("#ovStorageAvailSub").textContent = "配额上限 50 GB";
+    $("#ovStorageTopDir").textContent = "—";
+    $("#ovStorageTopDirSub").textContent = "未连接";
+    $("#ovStorageHomePath").textContent = "—";
+    $("#ovStorageUserLabel").textContent = "未连接";
+    $("#ovStorageFsSummary").textContent = "—";
+    $("#ovStorageMountLabel").textContent = "未连接";
     return;
   }
 
   const sshUser = storage.user || "user";
   const homePath = storage.home_path || `/home/${sshUser}`;
-  $("#greetingUser").textContent = sshUser;
   $("#sidebarUser").textContent = sshUser;
   $("#sidebarHome").textContent = homePath;
   $("#sidebarAvatar").textContent = sshUser.slice(0, 1).toUpperCase();
 
+  const totalGpus = Number(cluster.gpu_total) || gpus.length || 0;
+  const onlineGpus = Number(cluster.gpu_online) || 0;
+  const busyCount = Number(cluster.gpu_allocated ?? gpus.filter((g) => g.status === "busy").length) || 0;
   const maintCount = Number(cluster.gpu_maintenance) || 0;
   const restrictedCount = Number(cluster.gpu_restricted) || 0;
   const unavailableCount = maintCount + restrictedCount;
   const idleCount = Number(cluster.gpu_idle) || 0;
+  const nodes = getNodesList();
 
-  $("#gpuOnline").textContent = cluster.gpu_online;
-  $("#gpuTotal").textContent = cluster.gpu_total;
-  $("#gpuNavCount").textContent = cluster.gpu_total;
+  $("#gpuOnline").textContent = onlineGpus;
+  $("#gpuTotal").textContent = totalGpus;
+  $("#gpuNavCount").textContent = totalGpus;
   $("#gpuUtil").textContent = cluster.gpu_utilization;
   $("#activeJobs").textContent = cluster.active_jobs;
   $("#jobNavCount").textContent = cluster.active_jobs + cluster.queued_jobs;
@@ -225,138 +349,429 @@ function renderStats() {
     utilFoot.textContent = `空闲 ${idleCount} 张 · 实时分配率`;
   }
 
-  const homeUsedGb = storage.home_used_gb ?? (storage.used_tb * 1000);
+  // Overview GPU Panel (整体情况)
+  const capTotal = Math.max(totalGpus, 1);
+  const busyPct = (busyCount / capTotal) * 100;
+  const idlePct = (idleCount / capTotal) * 100;
+  const maintPct = (maintCount / capTotal) * 100;
+  const restPct = (restrictedCount / capTotal) * 100;
+
+  $("#ovGpuAllocRatio").textContent = `${busyCount} / ${onlineGpus} 可用卡已分配 (总计 ${totalGpus} 张)`;
+  const segs = $$("#ovGpuStackBar .stack-seg");
+  if (segs.length >= 4) {
+    segs[0].style.width = `${busyPct.toFixed(1)}%`;
+    segs[1].style.width = `${idlePct.toFixed(1)}%`;
+    segs[2].style.width = `${maintPct.toFixed(1)}%`;
+    segs[3].style.width = `${restPct.toFixed(1)}%`;
+  }
+  $("#ovLegendBusy").textContent = busyCount;
+  $("#ovLegendIdle").textContent = idleCount;
+  $("#ovLegendMaint").textContent = maintCount;
+  $("#ovLegendRestricted").textContent = restrictedCount;
+
+  $("#ovGpuBusy").textContent = `${busyCount} 张`;
+  $("#ovGpuBusySub").textContent = `占可用卡 ${cluster.gpu_utilization}%`;
+  $("#ovGpuIdle").textContent = `${idleCount} 张`;
+  $("#ovGpuIdleSub").textContent = idleCount > 0 ? "可立即调度任务" : "当前无空闲卡";
+  $("#ovGpuMaint").textContent = `${maintCount} 张`;
+  const maintNodes = nodes.filter((n) => n.mode === "down" || n.mode === "drain" || n.mode === "reserved");
+  $("#ovGpuMaintSub").textContent = maintNodes.length ? maintNodes.map((n) => n.name).join(", ") : "无维护/离线节点";
+  $("#ovGpuRestricted").textContent = `${restrictedCount} 张`;
+  const restNodes = nodes.filter((n) => n.mode === "restricted");
+  $("#ovGpuRestrictedSub").textContent = restNodes.length ? `${restNodes.map((n) => n.name).join(", ")} (rcadmin)` : "无受限节点";
+
+  $("#ovNodeCount").textContent = nodes.length;
+  $("#gpuCount").textContent = totalGpus;
+
+  const normalNodes = nodes.filter((n) => !n.mode || n.mode === "normal");
+  const fullNodes = normalNodes.filter((n) => n.allocated >= n.total && n.total > 0);
+  const idleNodes = normalNodes.filter((n) => n.allocated === 0);
+  const abnormalNodesCount = nodes.length - normalNodes.length;
+  $("#ovNodesHealthy").textContent = `${normalNodes.length} / ${nodes.length} 节点可用`;
+  $("#ovNodesDetail").textContent = `满载 ${fullNodes.length} · 空闲 ${idleNodes.length} · 维护/受限 ${abnormalNodesCount}`;
+
+  const models = [...new Set(nodes.map((n) => n.model).filter(Boolean))];
+  const partitions = [...new Set(nodes.flatMap((n) => n.partitions || []).filter(Boolean))];
+  $("#ovGpuModels").textContent = models.length ? models.join(" / ") : "NVIDIA GPU";
+  $("#ovGpuPartitions").textContent = partitions.length ? `涵盖分区: ${partitions.join(", ")}` : `共 ${nodes.length} 个计算节点`;
+
+  const allJobs = state.data.jobs || [];
+  const myJobsCount = allJobs.filter((j) => j.owner === sshUser).length;
+  $("#ovQueueSummary").textContent = `${cluster.active_jobs} 运行 / ${cluster.queued_jobs} 排队`;
+  $("#ovQueueSub").textContent = `当前用户任务: ${myJobsCount} 个`;
+
+  // Overview Storage Panel (整体情况)
+  const homeUsedGb = storage.home_used_gb ?? storage.used_tb * 1000;
   const quotaGb = storage.home_quota_gb || HOME_QUOTA_GB;
   const availGb = Math.max(quotaGb - homeUsedGb, 0);
   const usedQuotaPct = Math.min((homeUsedGb / quotaGb) * 100, 100);
   const subdirs = storage.subdirs || [];
-  const pieItems = storage.paths?.length ? storage.paths : subdirs;
   const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0 && !subdirs.length);
   const homeSize = formatSizeParts(homeUsedGb);
 
+  $("#storageNavCount").textContent = isInitialScan ? "…" : `${Math.round(usedQuotaPct)}%`;
   $("#storageUsed").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit").textContent = isInitialScan ? "" : ` ${homeSize.unit}`;
   $("#storagePercent").textContent = homePath;
-  $("#storageQuotaFoot").textContent = `剩余 ${formatSizeText(availGb)} / ${quotaGb} GB`;
-  $("#storageTrack").style.width = pieItems.length ? "100%" : `${Math.max(usedQuotaPct, homeUsedGb > 0 ? 2 : 0)}%`;
-  $("#storageTrack").style.background = buildSubdirLinearGradient(pieItems, quotaGb);
+  $("#storageQuotaFoot").textContent = `剩余 ${formatSizeText(availGb)} / ${quotaGb} GB →`;
+  $("#storageTrack").style.width = `${Math.max(usedQuotaPct, homeUsedGb > 0 ? 2 : 0)}%`;
+  $("#storageTrack").style.background = usedQuotaPct >= 85 ? "var(--danger)" : usedQuotaPct >= 65 ? "var(--orange)" : "var(--green)";
 
-  $("#storageDonut").style.background = buildSubdirPieGradient(pieItems, quotaGb, homeUsedGb);
+  $("#storageDonut").style.background = buildOverallDonutGradient(homeUsedGb, quotaGb);
   $("#storageDonutValue").textContent = isInitialScan ? "…" : `${usedQuotaPct.toFixed(1)}%`;
   $("#storageDonutLabel").textContent = `共 ${quotaGb} GB`;
   $("#storageUsed2").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit2").textContent = isInitialScan ? "" : homeSize.unit;
   $("#storageTotal2").innerHTML = `剩余可用 <b>${escapeHtml(formatSizeText(availGb))}</b> / 共 <b>${quotaGb} GB</b>`;
   $("#storageHomeFoot").innerHTML = `主目录 <b>${escapeHtml(homePath)}</b>`;
-  $("#storageHealthState").innerHTML = storage.scanning ? "<i></i>后台统计目录中…" : "<i></i>用户目录正常";
+  $("#storageHealthState").innerHTML = storage.scanning ? "<i></i>后台统计目录中…" : "<i></i>用户目录状态正常";
+
+  $("#ovStorageQuotaRatio").textContent = isInitialScan ? `正在统计 / ${quotaGb} GB` : `${formatSizeText(homeUsedGb)} / ${quotaGb} GB (${usedQuotaPct.toFixed(1)}%)`;
+  const quotaFill = $("#ovStorageQuotaFill");
+  quotaFill.style.width = `${Math.max(usedQuotaPct, homeUsedGb > 0 ? 2 : 0)}%`;
+  quotaFill.classList.toggle("warn", usedQuotaPct >= 75);
+
+  $("#ovStorageAvail").textContent = isInitialScan ? "计算中…" : formatSizeText(availGb);
+  $("#ovStorageAvailSub").textContent = `个人配额上限 ${quotaGb} GB`;
+
+  if (subdirs.length > 0) {
+    const topDir = subdirs[0];
+    const topSize = formatSizeText(topDir.used_gb ?? topDir.used_mb / 1000);
+    $("#ovStorageTopDir").textContent = `${topDir.name} (${topSize})`;
+    $("#ovStorageTopDirSub").textContent = `已统计 ${subdirs.length} 个一级目录 · 占已用 ${topDir.share_pct}%`;
+  } else {
+    $("#ovStorageTopDir").textContent = storage.scanning ? "后台扫描中…" : "暂无大目录";
+    $("#ovStorageTopDirSub").textContent = storage.scanning ? "正在执行 du 统计" : "主目录空间充裕";
+  }
+
+  $("#ovStorageHomePath").textContent = homePath;
+  $("#ovStorageUserLabel").textContent = `SSH 登录用户: ${sshUser}`;
+
+  if (storage.fs_total_tb) {
+    $("#ovStorageFsSummary").textContent = `${storage.fs_used_tb} / ${storage.fs_total_tb} TB`;
+    $("#ovStorageMountLabel").textContent = `挂载卷 ${storage.mount || "/home"} (剩余 ${storage.fs_avail_tb} TB)`;
+  } else {
+    $("#ovStorageFsSummary").textContent = "—";
+    $("#ovStorageMountLabel").textContent = `挂载卷 ${storage.mount || "/home"}`;
+  }
+
   $("#lastUpdated").textContent = formatTime(cluster.last_updated);
   $("#uptime").textContent = cluster.uptime;
   $("#clusterStatus").textContent = maintCount > 0 ? `运行正常 (${maintCount}卡维护)` : cluster.status === "healthy" ? "运行正常" : "需关注";
   renderSpark();
 }
 
-function renderGpus() {
-  const isLive = Boolean(state.data.cluster.connected && state.data.cluster.data_source === "ssh");
+function renderGpusPage() {
+  const { cluster, gpus = [] } = state.data;
+  const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   if (!isLive) {
+    $("#gpuPageOnline").textContent = "—";
+    $("#gpuPageTotal").textContent = "—";
+    $("#gpuPageNodeFoot").textContent = "未连接";
+    $("#gpuPageBusy").textContent = "—";
+    $("#gpuPageUtil").textContent = "—";
+    $("#gpuPageIdle").textContent = "—";
+    $("#gpuPageUnavail").textContent = "—";
+    $("#gpuPageNodeGrid").innerHTML = `<div class="empty-state">未连接服务器，暂无节点状态数据</div>`;
     $("#gpuGrid").innerHTML = `<div class="empty-state">未连接服务器，暂无 GPU 节点数据</div>`;
     $("#gpuShown").textContent = 0;
-    $("#gpuCount").textContent = 0;
+    $("#gpuCountDetail").textContent = 0;
     return;
   }
-  const all = state.data.gpus;
-  const filtered = all.filter((gpu) => state.gpuFilter === "all" || gpu.status === state.gpuFilter);
+
+  const nodes = getNodesList();
+  const totalGpus = Number(cluster.gpu_total) || gpus.length || 0;
+  const onlineGpus = Number(cluster.gpu_online) || 0;
+  const busyCount = Number(cluster.gpu_allocated ?? gpus.filter((g) => g.status === "busy").length) || 0;
+  const maintCount = Number(cluster.gpu_maintenance) || 0;
+  const restrictedCount = Number(cluster.gpu_restricted) || 0;
+  const idleCount = Number(cluster.gpu_idle) || 0;
+
+  if (state.selectedNode !== "all" && !nodes.some((n) => n.name === state.selectedNode)) {
+    state.selectedNode = "all";
+  }
+
+  $("#gpuPageOnline").textContent = onlineGpus;
+  $("#gpuPageTotal").textContent = totalGpus;
+  $("#gpuPageNodeFoot").textContent = `分布在 ${nodes.length} 个计算节点`;
+  $("#gpuPageBusy").textContent = busyCount;
+  $("#gpuPageUtil").textContent = cluster.gpu_utilization;
+  $("#gpuPageIdle").textContent = idleCount;
+  $("#gpuPageUnavail").textContent = maintCount + restrictedCount;
+  $("#gpuPageUnavailFoot").textContent = `${maintCount} 维护 · ${restrictedCount} 受限(rcadmin)`;
+
+  $("#clearNodeFilterBtn")?.classList.toggle("selected", state.selectedNode === "all");
+  $("#gpuActiveNodeTag").textContent = state.selectedNode === "all" ? "" : `· 已筛选节点: ${state.selectedNode}`;
+
+  $("#gpuPageNodeGrid").innerHTML = nodes
+    .map((node) => {
+      const badge = getNodeBadgeInfo(node);
+      const selectedCls = state.selectedNode === node.name ? "selected" : "";
+      const pct = node.total > 0 ? Math.min(Math.round((node.allocated / node.total) * 100), 100) : 0;
+      const barCls =
+        node.mode === "down"
+          ? "maint down"
+          : node.mode === "restricted"
+            ? "maint restricted"
+            : node.mode === "drain" || node.mode === "reserved"
+              ? "maint"
+              : utilClass(pct);
+      const barWidth = node.mode in { down: 1, drain: 1, reserved: 1, restricted: 1 } && node.allocated === 0 ? 100 : pct;
+      const partText = node.partitions?.length ? `分区: ${node.partitions.join(",")}` : `状态: ${node.state}`;
+      return `<div class="node-detail-card ${selectedCls}" data-select-node="${escapeHtml(node.name)}">
+        <div class="node-mini-top">
+          <div class="node-mini-name"><span>${escapeHtml(node.name)}</span><span class="node-mini-model">${escapeHtml(node.model)}</span></div>
+          <span class="node-badge ${badge.cls}">${badge.label}</span>
+        </div>
+        <div class="util-bar"><span class="${barCls}" style="width:${barWidth}%"></span></div>
+        <div class="node-mini-meta">
+          <span>占用 <b>${node.allocated} / ${node.total}</b> 卡</span>
+          <span>${escapeHtml(node.reason || partText)}</span>
+        </div>
+      </div>`;
+    })
+    .join("");
+
+  const filtered = gpus.filter((gpu) => {
+    const matchStatus = state.gpuFilter === "all" || gpu.status === state.gpuFilter;
+    const matchNode = state.selectedNode === "all" || gpu.node === state.selectedNode;
+    return matchStatus && matchNode;
+  });
+
   if (!filtered.length) {
-    const emptyLabel = state.gpuFilter === "maintenance" ? "当前没有处于维护或排空状态的 GPU" : state.gpuFilter === "idle" ? "当前所有可用 GPU 均已满载，无空闲卡" : "无匹配的 GPU 节点";
+    const emptyLabel =
+      state.gpuFilter === "maintenance"
+        ? "当前筛选范围内没有处于维护或受限状态的 GPU"
+        : state.gpuFilter === "idle"
+          ? "当前筛选范围内所有可用 GPU 均已满载，无空闲卡"
+          : "无匹配的 GPU 节点";
     $("#gpuGrid").innerHTML = `<div class="empty-state">${emptyLabel}</div>`;
     $("#gpuShown").textContent = 0;
-    $("#gpuCount").textContent = state.data.cluster.gpu_total;
+    $("#gpuCountDetail").textContent = totalGpus;
     return;
   }
-  $("#gpuGrid").innerHTML = filtered.map((gpu) => {
-    const memory = gpu.memory_used == null || gpu.memory_total == null ? "—" : `${gpu.memory_used}/${gpu.memory_total}G`;
-    const rightMeta = gpu.temperature != null ? `<b>${gpu.temperature}°</b>` : gpu.node_state ? `STATE <b>${escapeHtml(gpu.node_state)}</b>` : "<b>—</b>";
-    const isMaint = gpu.status === "maintenance";
-    const isDown = gpu.substatus === "down";
-    const isRestricted = gpu.substatus === "restricted";
-    const isBusyDrain = gpu.status === "busy" && (gpu.substatus === "drain" || gpu.substatus === "down" || gpu.substatus === "reserved");
-    const tileClass = isMaint ? (isDown ? "down" : isRestricted ? "restricted" : "maintenance") : isBusyDrain ? "busy-drain" : "";
-    const dotClass = gpu.status === "idle" ? "idle" : isMaint ? (isDown ? "down" : isRestricted ? "restricted" : "maintenance") : isBusyDrain ? "busy-drain" : "";
-    const utilDisplay = gpu.util_display ?? `${gpu.utilization}%`;
-    const barHtml = isMaint
-      ? `<span class="maint ${isDown ? "down" : isRestricted ? "restricted" : ""}" style="width:100%"></span>`
-      : `<span class="${utilClass(gpu.utilization)}" style="width:${gpu.utilization}%"></span>`;
-    const tooltipParts = [`${gpu.node} / ${gpu.model}`];
-    if (gpu.node_state) tooltipParts.push(`节点状态: ${gpu.node_state}`);
-    if (gpu.node_reason) tooltipParts.push(`原因: ${gpu.node_reason}`);
-    return `<div class="gpu-tile ${tileClass}" title="${escapeHtml(tooltipParts.join(" · "))}">
-    <div class="tile-head"><span>${escapeHtml(gpu.id)}</span><i class="gpu-status ${dotClass}"></i></div>
-    <div class="gpu-util"><strong>${escapeHtml(utilDisplay)}</strong><span>${escapeHtml(gpu.util_label || "GPU UTIL")}</span></div>
-    <div class="util-bar">${barHtml}</div>
-    <div class="gpu-meta"><span>MEM <b>${memory}</b></span><span>${rightMeta}</span></div>
-    <div class="gpu-process"><strong>${escapeHtml(gpu.process)}</strong>${gpu.owner ? ` · ${escapeHtml(gpu.owner)}` : ""}</div>
-  </div>`;
-  }).join("");
+
+  $("#gpuGrid").innerHTML = filtered
+    .map((gpu) => {
+      const memory = gpu.memory_used == null || gpu.memory_total == null ? "—" : `${gpu.memory_used}/${gpu.memory_total}G`;
+      const rightMeta =
+        gpu.temperature != null ? `<b>${gpu.temperature}°</b>` : gpu.node_state ? `STATE <b>${escapeHtml(gpu.node_state)}</b>` : "<b>—</b>";
+      const isMaint = gpu.status === "maintenance";
+      const isDown = gpu.substatus === "down";
+      const isRestricted = gpu.substatus === "restricted";
+      const isBusyDrain = gpu.status === "busy" && (gpu.substatus === "drain" || gpu.substatus === "down" || gpu.substatus === "reserved");
+      const tileClass = isMaint ? (isDown ? "down" : isRestricted ? "restricted" : "maintenance") : isBusyDrain ? "busy-drain" : "";
+      const dotClass =
+        gpu.status === "idle" ? "idle" : isMaint ? (isDown ? "down" : isRestricted ? "restricted" : "maintenance") : isBusyDrain ? "busy-drain" : "";
+      const utilDisplay = gpu.util_display ?? `${gpu.utilization}%`;
+      const barHtml = isMaint
+        ? `<span class="maint ${isDown ? "down" : isRestricted ? "restricted" : ""}" style="width:100%"></span>`
+        : `<span class="${utilClass(gpu.utilization)}" style="width:${gpu.utilization}%"></span>`;
+      const tooltipParts = [`${gpu.node} / ${gpu.model}`];
+      if (gpu.node_state) tooltipParts.push(`节点状态: ${gpu.node_state}`);
+      if (gpu.node_reason) tooltipParts.push(`原因: ${gpu.node_reason}`);
+      return `<div class="gpu-tile ${tileClass}" title="${escapeHtml(tooltipParts.join(" · "))}">
+      <div class="tile-head"><span>${escapeHtml(gpu.id)}</span><i class="gpu-status ${dotClass}"></i></div>
+      <div class="gpu-util"><strong>${escapeHtml(utilDisplay)}</strong><span>${escapeHtml(gpu.util_label || "GPU UTIL")}</span></div>
+      <div class="util-bar">${barHtml}</div>
+      <div class="gpu-meta"><span>MEM <b>${memory}</b></span><span>${rightMeta}</span></div>
+      <div class="gpu-process"><strong>${escapeHtml(gpu.process)}</strong>${gpu.owner ? ` · ${escapeHtml(gpu.owner)}` : ""}</div>
+    </div>`;
+    })
+    .join("");
+
   $("#gpuShown").textContent = filtered.length;
-  $("#gpuCount").textContent = state.data.cluster.gpu_total;
+  $("#gpuCountDetail").textContent = totalGpus;
 }
 
-function renderStorage() {
-  const isLive = Boolean(state.data.cluster.connected && state.data.cluster.data_source === "ssh");
+function renderStoragePage() {
+  const { cluster, storage } = state.data;
+  const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   if (!isLive) {
+    $("#stPageUsed").textContent = "—";
+    $("#stPageUsedUnit").textContent = " GB";
+    $("#stPageUsedPct").textContent = "未连接";
+    $("#stPageAvail").textContent = "—";
+    $("#stPageAvailUnit").textContent = " GB";
+    $("#stPageTopSize").textContent = "—";
+    $("#stPageTopUnit").textContent = "";
+    $("#stPageTopName").textContent = "—";
+    $("#stPageDirCount").textContent = "共 0 个子目录";
+    $("#stPageFsUsed").textContent = "—";
+    $("#stPageFsTotal").textContent = "/ — TB";
+    $("#stPageMount").textContent = "未连接";
+    $("#storageDetailDonut").style.background = `conic-gradient(var(--track) 0 100%)`;
+    $("#storageDetailDonutValue").textContent = "—";
+    $("#storageDetailUsed").textContent = "—";
+    $("#storageDetailUnit").textContent = "GB";
+    $("#storageDetailTotal").textContent = "总容量 50 GB";
+    $("#storageDetailHealth").innerHTML = "<i></i>未连接";
+    $("#storageDetailFoot").innerHTML = "主目录 <b>—</b>";
     $("#storagePaths").innerHTML = `<div class="empty-state">未连接服务器，暂无目录空间数据</div>`;
     $("#usersList").innerHTML = `<div class="empty-state">未连接服务器，暂无主目录明细</div>`;
     return;
   }
-  const subdirs = state.data.storage.subdirs || [];
-  const paths = state.data.storage.paths || [];
+
+  const sshUser = storage.user || "user";
+  const homePath = storage.home_path || `/home/${sshUser}`;
+  const homeUsedGb = storage.home_used_gb ?? storage.used_tb * 1000;
+  const quotaGb = storage.home_quota_gb || HOME_QUOTA_GB;
+  const availGb = Math.max(quotaGb - homeUsedGb, 0);
+  const usedQuotaPct = Math.min((homeUsedGb / quotaGb) * 100, 100);
+  const subdirs = storage.subdirs || [];
+  const paths = storage.paths || [];
+  const pieItems = paths.length ? paths : subdirs;
+  const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0 && !subdirs.length);
+
+  const usedParts = formatSizeParts(homeUsedGb);
+  const availParts = formatSizeParts(availGb);
+
+  $("#stPageUsed").textContent = isInitialScan ? "扫描中" : usedParts.number;
+  $("#stPageUsedUnit").textContent = isInitialScan ? "" : ` ${usedParts.unit}`;
+  $("#stPageUsedPct").textContent = `占 50 GB 配额的 ${usedQuotaPct.toFixed(1)}%`;
+
+  $("#stPageAvail").textContent = isInitialScan ? "…" : availParts.number;
+  $("#stPageAvailUnit").textContent = isInitialScan ? "" : ` ${availParts.unit}`;
+
+  if (subdirs.length > 0) {
+    const top = subdirs[0];
+    const topParts = formatSizeParts(top.used_gb ?? top.used_mb / 1000);
+    $("#stPageTopSize").textContent = topParts.number;
+    $("#stPageTopUnit").textContent = ` ${topParts.unit}`;
+    $("#stPageTopName").textContent = `目录: ${top.name}`;
+    $("#stPageDirCount").textContent = `前 ${subdirs.length} 大目录`;
+  } else {
+    $("#stPageTopSize").textContent = "—";
+    $("#stPageTopUnit").textContent = "";
+    $("#stPageTopName").textContent = storage.scanning ? "正在扫描…" : "无子目录";
+    $("#stPageDirCount").textContent = "共 0 个子目录";
+  }
+
+  $("#stPageFsUsed").textContent = storage.fs_used_tb ?? "—";
+  $("#stPageFsTotal").textContent = `/ ${storage.fs_total_tb ?? "—"} TB`;
+  $("#stPageMount").textContent = `挂载点 ${storage.mount || "/home"}`;
+
+  $("#storageDetailDonut").style.background = buildSubdirPieGradient(pieItems, quotaGb, homeUsedGb);
+  $("#storageDetailDonutValue").textContent = isInitialScan ? "…" : `${usedQuotaPct.toFixed(1)}%`;
+  $("#storageDetailDonutLabel").textContent = `共 ${quotaGb} GB`;
+  $("#storageDetailUsed").textContent = isInitialScan ? "扫描中" : usedParts.number;
+  $("#storageDetailUnit").textContent = isInitialScan ? "" : usedParts.unit;
+  $("#storageDetailTotal").innerHTML = `剩余可用 <b>${escapeHtml(formatSizeText(availGb))}</b> / 共 <b>${quotaGb} GB</b>`;
+  $("#storageDetailFoot").innerHTML = `主目录 <b>${escapeHtml(homePath)}</b>`;
+  $("#storageDetailHealth").innerHTML = storage.scanning ? "<i></i>后台统计目录中…" : "<i></i>各子目录空间统计完成";
+
   if (!paths.length) {
-    const emptyMsg = state.data.storage.scanning ? "正在后台统计用户目录各文件夹占比…" : "主目录为空或暂无子目录数据";
+    const emptyMsg = storage.scanning ? "正在后台统计用户目录各文件夹占比…" : "主目录为空或暂无子目录数据";
     $("#storagePaths").innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
   } else {
-    const quotaGb = state.data.storage.home_quota_gb || HOME_QUOTA_GB;
-    $("#storagePaths").innerHTML = paths.map((item, idx) => {
-      const usedGb = item.used_gb ?? (item.used_tb * 1000);
-      const pct = Number(item.pct ?? ((usedGb / quotaGb) * 100));
-      const color = PIE_COLORS[idx % PIE_COLORS.length];
-      return `<div class="path-row" title="${escapeHtml(item.path)}: ${formatSizeText(usedGb)} (占 50GB 的 ${pct.toFixed(1)}%)"><span class="path-name"><i class="path-dot" style="background:${color}"></i>${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%;background:${color}"></span></div><span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span></div>`;
-    }).join("");
+    $("#storagePaths").innerHTML = paths
+      .map((item, idx) => {
+        const usedGb = item.used_gb ?? item.used_tb * 1000;
+        const pct = Number(item.pct ?? (usedGb / quotaGb) * 100);
+        const color = PIE_COLORS[idx % PIE_COLORS.length];
+        return `<div class="path-row" title="${escapeHtml(item.path)}: ${formatSizeText(usedGb)} (占 ${quotaGb}GB 配额的 ${pct.toFixed(1)}%)">
+          <span class="path-name"><i class="path-dot" style="background:${color}"></i>${escapeHtml(item.path)}</span>
+          <div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%;background:${color}"></span></div>
+          <span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span>
+        </div>`;
+      })
+      .join("");
   }
 
   if (!subdirs.length) {
-    const msg = state.data.storage.scanning ? "正在后台统计主目录各文件夹大小…" : "主目录为空或暂无子目录明细";
+    const msg = storage.scanning ? "正在后台统计主目录各文件夹大小…" : "主目录为空或暂无子目录明细";
     $("#usersList").innerHTML = `<div class="empty-state">${msg}</div>`;
     return;
   }
-  $("#usersList").innerHTML = subdirs.map((item, index) => {
-    const icon = item.name.startsWith(".") ? "⚙" : item.name.startsWith("~") || item.name === "其他" ? "📄" : "📁";
-    const sizeLabel = formatSizeText(item.used_gb ?? (item.used_mb / 1000));
-    const color = PIE_COLORS[index % PIE_COLORS.length];
-    return `<div class="user-row" title="${escapeHtml(item.name)} (${item.share_pct}%)">
-      <span class="user-rank">${String(index + 1).padStart(2, "0")}</span>
-      <span class="user-avatar">${icon}</span>
-      <span class="user-name">${escapeHtml(item.name)}<div class="user-bar"><span style="width:${Math.max(item.share_pct, 2)}%;background:${color}"></span></div></span>
-      <span class="user-amount">${escapeHtml(sizeLabel)}</span>
-    </div>`;
-  }).join("");
+
+  $("#usersList").innerHTML = subdirs
+    .map((item, index) => {
+      const icon = item.name.startsWith(".") ? "⚙" : item.name.startsWith("~") || item.name === "其他" ? "📄" : "📁";
+      const usedGb = item.used_gb ?? item.used_mb / 1000;
+      const sizeLabel = formatSizeText(usedGb);
+      const quotaPct = Math.min((usedGb / quotaGb) * 100, 100).toFixed(1);
+      const color = PIE_COLORS[index % PIE_COLORS.length];
+      return `<div class="user-row" title="${escapeHtml(item.name)}: ${sizeLabel} (占已用空间 ${item.share_pct}% · 占配额 ${quotaPct}%)">
+        <span class="user-rank">${String(index + 1).padStart(2, "0")}</span>
+        <span class="user-avatar">${icon}</span>
+        <div class="user-name">
+          <div class="user-name-head">
+            <span>${escapeHtml(item.name)}</span>
+            <small>占已用 ${item.share_pct}% · 配额 ${quotaPct}%</small>
+          </div>
+          <div class="user-bar"><span style="width:${Math.max(item.share_pct, 2)}%;background:${color}"></span></div>
+        </div>
+        <span class="user-amount">${escapeHtml(sizeLabel)}</span>
+      </div>`;
+    })
+    .join("");
 }
 
-function renderJobs() {
-  const isLive = Boolean(state.data.cluster.connected && state.data.cluster.data_source === "ssh");
+function renderJobRowHtml(job) {
+  const isPending = job.status === "PENDING";
+  const reasonText = isPending && job.reason ? REASON_LABELS[job.reason] || job.reason : "";
+  const statusLabel = reasonText ? `PENDING · ${reasonText}` : job.status;
+  const statusTitle = isPending && job.reason ? `排队原因: ${job.reason}` : job.node ? `运行节点: ${job.node}` : "";
+  const nodeCell = job.node ? escapeHtml(job.node) : `<span style="color:var(--muted-2)">—</span>`;
+  return `<tr>
+    <td>${escapeHtml(job.name)}<span class="job-id">${escapeHtml(job.id)}</span></td>
+    <td class="owner">${escapeHtml(job.owner)}</td>
+    <td>${escapeHtml(job.partition)}</td>
+    <td>${nodeCell}</td>
+    <td>${job.gpus}</td>
+    <td>${escapeHtml(job.elapsed)}</td>
+    <td><span class="status-pill ${isPending ? "pending" : ""}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}</span></td>
+  </tr>`;
+}
+
+function renderJobsPage() {
+  const { cluster, jobs = [], storage } = state.data;
+  const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   if (!isLive) {
-    $("#jobsTable").innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted-2);padding:24px 8px;">未连接服务器，暂无任务队列数据</td></tr>`;
+    $("#jobPageTotal").textContent = "—";
+    $("#jobPageRunning").textContent = "—";
+    $("#jobPageGpuUsed").textContent = "未连接";
+    $("#jobPagePending").textContent = "—";
+    $("#jobPageMine").textContent = "—";
+    $("#jobsShownCount").textContent = "0";
+    $("#jobsTotalCount").textContent = "0";
+    $("#jobsTable").innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted-2);padding:24px 8px;">未连接服务器，暂无任务队列数据</td></tr>`;
     return;
   }
-  if (!state.data.jobs.length) {
-    $("#jobsTable").innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted-2);padding:24px 8px;">当前无运行或排队中的任务</td></tr>`;
+
+  const sshUser = storage?.user || "";
+  const runningJobs = jobs.filter((j) => j.status === "RUNNING");
+  const pendingJobs = jobs.filter((j) => j.status !== "RUNNING");
+  const myJobs = jobs.filter((j) => j.owner === sshUser);
+  const runningGpuSum = runningJobs.reduce((acc, j) => acc + (Number(j.gpus) || 0), 0);
+
+  $("#jobPageTotal").textContent = jobs.length;
+  $("#jobPageRunning").textContent = runningJobs.length;
+  $("#jobPageGpuUsed").textContent = `共占用 ${runningGpuSum} 张 GPU`;
+  $("#jobPagePending").textContent = pendingJobs.length;
+  $("#jobPageMine").textContent = myJobs.length;
+  $("#jobPageMineUser").textContent = sshUser ? `用户 ${sshUser}` : "当前 SSH 用户";
+
+  const keyword = state.jobSearch.trim().toLowerCase();
+  const filtered = jobs.filter((job) => {
+    if (state.jobFilter === "RUNNING" && job.status !== "RUNNING") return false;
+    if (state.jobFilter === "PENDING" && job.status === "RUNNING") return false;
+    if (state.jobFilter === "mine" && job.owner !== sshUser) return false;
+    if (keyword) {
+      const hay = `${job.id} ${job.name} ${job.owner} ${job.partition} ${job.node || ""} ${job.reason || ""}`.toLowerCase();
+      if (!hay.includes(keyword)) return false;
+    }
+    return true;
+  });
+
+  $("#jobsShownCount").textContent = filtered.length;
+  $("#jobsTotalCount").textContent = jobs.length;
+
+  if (!filtered.length) {
+    $("#jobsTable").innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted-2);padding:24px 8px;">无符合筛选条件的任务</td></tr>`;
     return;
   }
-  $("#jobsTable").innerHTML = state.data.jobs.map((job) => {
-    const isPending = job.status === "PENDING";
-    const reasonText = isPending && job.reason ? (REASON_LABELS[job.reason] || job.reason) : "";
-    const statusLabel = reasonText ? `PENDING · ${reasonText}` : job.status;
-    const statusTitle = isPending && job.reason ? `排队原因: ${job.reason}` : job.node ? `运行节点: ${job.node}` : "";
-    return `<tr><td>${escapeHtml(job.name)}<span class="job-id">${escapeHtml(job.id)}</span></td><td class="owner">${escapeHtml(job.owner)}</td><td>${escapeHtml(job.partition)}</td><td>${job.gpus}</td><td>${escapeHtml(job.elapsed)}</td><td><span class="status-pill ${isPending ? "pending" : ""}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}</span></td></tr>`;
-  }).join("");
+  $("#jobsTable").innerHTML = filtered.map((job) => renderJobRowHtml(job)).join("");
 }
 
 function renderSettingsDiag() {
@@ -376,7 +791,14 @@ function renderSettingsDiag() {
   }
 }
 
-function render() { renderStats(); renderGpus(); renderStorage(); renderJobs(); renderSettingsDiag(); }
+function render() {
+  if (!state.data) return;
+  renderStatsAndOverview();
+  renderGpusPage();
+  renderStoragePage();
+  renderJobsPage();
+  renderSettingsDiag();
+}
 
 async function fetchMetrics(showToast = false, force = false) {
   if (state.inFlight && !showToast) return;
@@ -456,33 +878,111 @@ async function saveSettings(event) {
   }
 }
 
-function showToastMessage(message, isError = false) { const toast = $("#toast"); toast.textContent = message; toast.classList.toggle("error", isError); toast.classList.add("show"); clearTimeout(showToastMessage.timer); showToastMessage.timer = setTimeout(() => toast.classList.remove("show"), 2200); }
+function showToastMessage(message, isError = false) {
+  const toast = $("#toast");
+  toast.textContent = message;
+  toast.classList.toggle("error", isError);
+  toast.classList.add("show");
+  clearTimeout(showToastMessage.timer);
+  showToastMessage.timer = setTimeout(() => toast.classList.remove("show"), 2200);
+}
 
-function setView(view) {
-  state.activeView = view;
-  const titles = { overview: "总览", gpu: "GPU 节点", storage: "存储空间", jobs: "任务队列", settings: "采集设置" };
-  $("#pageTitle").textContent = titles[view] || "总览";
-  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  const target = view === "overview" ? $("#overviewStats") : view === "gpu" ? $("#gpuSection") : view === "storage" ? $("#storageSection") : view === "jobs" ? $("#jobsSection") : view === "settings" ? $("#settingsSection") : null;
-  if (target) {
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
-    const panel = target.classList.contains("panel") ? target : target.querySelector(".panel");
-    if (panel) {
-      panel.classList.add("highlight-pulse");
-      setTimeout(() => panel.classList.remove("highlight-pulse"), 1200);
+function setView(view, options = {}) {
+  const targetView = VIEW_META[view] ? view : "overview";
+  state.activeView = targetView;
+  document.body.classList.toggle("overview-locked", targetView === "overview");
+
+  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === targetView));
+  $$(".view-page").forEach((page) => page.classList.toggle("active", page.dataset.page === targetView));
+
+  updatePageHeader();
+
+  if (options.updateHash !== false) {
+    const newHash = targetView === "overview" ? "#overview" : `#${targetView}`;
+    if (window.location.hash !== newHash) {
+      history.replaceState(null, "", newHash);
     }
   }
-  if (view === "settings") fetchSettings();
+
+  $(".main-content")?.scrollTo({ top: 0, behavior: "instant" });
+  if (targetView === "settings") fetchSettings();
 }
 
 function bindEvents() {
-  $$("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
-  $$("#gpuFilter button").forEach((button) => button.addEventListener("click", () => { $$("#gpuFilter button").forEach((item) => item.classList.remove("selected")); button.classList.add("selected"); state.gpuFilter = button.dataset.filter; renderGpus(); }));
+  document.addEventListener("click", (event) => {
+    const jumpNodeCard = event.target.closest("[data-jump-node]");
+    if (jumpNodeCard) {
+      state.selectedNode = jumpNodeCard.dataset.jumpNode;
+      setView("gpu");
+      renderGpusPage();
+      return;
+    }
+
+    const selectNodeCard = event.target.closest("[data-select-node]");
+    if (selectNodeCard) {
+      const nodeName = selectNodeCard.dataset.selectNode;
+      state.selectedNode = state.selectedNode === nodeName ? "all" : nodeName;
+      renderGpusPage();
+      return;
+    }
+
+    const viewBtn = event.target.closest("[data-view]");
+    if (viewBtn) {
+      setView(viewBtn.dataset.view);
+    }
+  });
+
+  $("#clearNodeFilterBtn")?.addEventListener("click", () => {
+    state.selectedNode = "all";
+    renderGpusPage();
+  });
+
+  $$("#gpuFilter button").forEach((button) =>
+    button.addEventListener("click", () => {
+      $$("#gpuFilter button").forEach((item) => item.classList.remove("selected"));
+      button.classList.add("selected");
+      state.gpuFilter = button.dataset.filter;
+      renderGpusPage();
+    })
+  );
+
+  $$("#jobFilter button").forEach((button) =>
+    button.addEventListener("click", () => {
+      $$("#jobFilter button").forEach((item) => item.classList.remove("selected"));
+      button.classList.add("selected");
+      state.jobFilter = button.dataset.jobFilter;
+      renderJobsPage();
+    })
+  );
+
+  $("#jobSearchInput")?.addEventListener("input", (event) => {
+    state.jobSearch = event.target.value || "";
+    renderJobsPage();
+  });
+
+  $("#rescanStorageBtn")?.addEventListener("click", () => {
+    showToastMessage("已触发主目录空间重新扫描…");
+    fetchMetrics(true, true);
+  });
+
   $("#refreshButton").addEventListener("click", () => fetchMetrics(true, true));
-  $("#themeButton").addEventListener("click", () => { document.body.classList.toggle("light"); showToastMessage(document.body.classList.contains("light") ? "已切换到浅色主题" : "已切换到深色主题"); });
+  $("#themeButton").addEventListener("click", () => {
+    document.body.classList.toggle("light");
+    showToastMessage(document.body.classList.contains("light") ? "已切换到浅色主题" : "已切换到深色主题");
+  });
   $("#settingsForm").addEventListener("submit", saveSettings);
   $("#testProbeButton").addEventListener("click", () => fetchMetrics(true, true));
+
+  window.addEventListener("hashchange", () => {
+    const hashView = window.location.hash.replace(/^#/, "");
+    if (VIEW_META[hashView] && hashView !== state.activeView) {
+      setView(hashView, { updateHash: false });
+    }
+  });
 }
+
+const initialHash = window.location.hash.replace(/^#/, "");
+setView(VIEW_META[initialHash] ? initialHash : "overview", { updateHash: false });
 
 bindEvents();
 fetchSettings();
