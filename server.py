@@ -30,11 +30,12 @@ PORT = int(os.environ.get("MADAR_DASHBOARD_PORT", "8765"))
 SSH_HOST = os.environ.get("MADAR_SSH_HOST", "madar")
 SSH_USER = os.environ.get("MADAR_SSH_USER", "")
 SSH_PORT = os.environ.get("MADAR_SSH_PORT", "")
-SSH_TIMEOUT = float(os.environ.get("MADAR_SSH_TIMEOUT", "8"))
+SSH_TIMEOUT = float(os.environ.get("MADAR_SSH_TIMEOUT", "20"))
 SSH_CONFIG = os.environ.get("MADAR_SSH_CONFIG", str(Path.home() / ".ssh" / "config"))
 SSH_BIN = os.environ.get("MADAR_SSH_BIN", "")
 
 _CACHE_LOCK = threading.Lock()
+_SSH_LOCK = threading.Lock()
 _CACHE: dict = {"at": 0.0, "payload": None}
 
 
@@ -83,9 +84,9 @@ def _ssh_command(command: str) -> list[str]:
     args = [
         _find_ssh(),
         "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
-        "-o", "ServerAliveInterval=5",
-        "-o", "ServerAliveCountMax=1",
+        "-o", "ConnectTimeout=10",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=2",
         "-o", "StrictHostKeyChecking=accept-new",
     ]
     config = Path(SSH_CONFIG).expanduser()
@@ -321,8 +322,64 @@ def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
             "scratch": scratch_info if scratch_info is not None else _DU_CACHE["scratch"],
             "scanning": False,
         })
-    with _CACHE_LOCK:
-        _CACHE["at"] = 0.0
+
+
+def _sync_du_into_payload(payload: dict) -> None:
+    if not payload or not payload.get("cluster", {}).get("connected"):
+        return
+    storage = payload.get("storage")
+    if not storage:
+        return
+    with _DU_LOCK:
+        home_kb = _DU_CACHE["home_kb"]
+        subdirs = list(_DU_CACHE["subdirs"])
+        scratch_cached = _DU_CACHE["scratch"]
+        scanning = _DU_CACHE["scanning"]
+    home_used_bytes = home_kb * 1024
+    home_used_gb = round(home_used_bytes / 1e9, 2)
+    home_used_tb = round(home_used_bytes / 1e12, 3)
+    total_gb = max(storage.get("fs_total_gb", 1.0), 1.0)
+    storage["scanning"] = scanning
+    storage["home_used_gb"] = home_used_gb
+    storage["home_used_tb"] = home_used_tb
+    storage["used_tb"] = home_used_tb
+    storage["subdirs"] = subdirs
+    home_path = storage.get("home_path", "~")
+    mount = storage.get("mount", "/")
+    fs_used_gb = storage.get("fs_used_gb", 0.0)
+    fs_used_tb = storage.get("fs_used_tb", 0.0)
+    quota_tb = storage.get("quota_tb", 0.0)
+    paths = [
+        {
+            "path": f"主目录 ({home_path})",
+            "used_gb": home_used_gb,
+            "quota_gb": total_gb,
+            "used_tb": home_used_tb,
+            "quota_tb": quota_tb,
+            "pct": round(min(home_used_gb / total_gb * 100, 100), 1),
+            "kind": "home",
+        }
+    ]
+    if scratch_cached:
+        paths.append({
+            "path": f"Scratch ({scratch_cached['path']})",
+            "used_gb": scratch_cached["used_gb"],
+            "quota_gb": total_gb,
+            "used_tb": scratch_cached["used_tb"],
+            "quota_tb": quota_tb,
+            "pct": round(min(scratch_cached["used_gb"] / total_gb * 100, 100), 1),
+            "kind": "scratch",
+        })
+    paths.append({
+        "path": f"所在磁盘 ({mount})",
+        "used_gb": fs_used_gb,
+        "quota_gb": total_gb,
+        "used_tb": fs_used_tb,
+        "quota_tb": quota_tb,
+        "pct": round(min(fs_used_gb / total_gb * 100, 100), 1),
+        "kind": "mount",
+    })
+    storage["paths"] = paths
 
 
 def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
@@ -335,6 +392,7 @@ def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
         _DU_CACHE["scanning"] = True
 
     def _worker():
+        time.sleep(1.0)
         try:
             raw = _run_remote(_DU_REMOTE_COMMAND, timeout=max(SSH_TIMEOUT, 25))
             _parse_and_store_du(raw, fallback_home=home_path)
@@ -431,14 +489,14 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
 
 def _collect_ssh_metrics(force_du: bool = False) -> dict:
     probe_command = (
-        r'''printf '__MADAR_NODES__\n'; for n in $(sinfo -h -N -p gpu,interactive -o "%N" 2>/dev/null); do scontrol show node -o "$n"; done; printf '__MADAR_QUEUE__\n'; { squeue -h -t RUNNING -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N" | head -100; squeue -h -t PENDING -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N" | head -100; }; printf '__MADAR_COUNTS__\n'; printf 'RUNNING|'; squeue -h -t RUNNING -p gpu,interactive | wc -l; printf 'PENDING|'; squeue -h -t PENDING -p gpu,interactive | wc -l; printf '__MADAR_STORAGE__\n'; '''
+        r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N" 2>/dev/null; printf '__MADAR_STORAGE__\n'; '''
         + _STORAGE_FAST_COMMAND
     )
-    raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 10))
-    sections = {"nodes": [], "queue": [], "counts": [], "storage": []}
+    raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 20))
+    sections = {"nodes": [], "queue": [], "storage": []}
     current = None
     for line in raw.splitlines():
-        marker = {"__MADAR_NODES__": "nodes", "__MADAR_QUEUE__": "queue", "__MADAR_COUNTS__": "counts", "__MADAR_STORAGE__": "storage"}.get(line.strip())
+        marker = {"__MADAR_NODES__": "nodes", "__MADAR_QUEUE__": "queue", "__MADAR_STORAGE__": "storage"}.get(line.strip())
         if marker:
             current = marker
             continue
@@ -447,20 +505,17 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     nodes_raw = "\n".join(sections["nodes"])
     queue_raw = "\n".join(sections["queue"])
     storage_raw = "\n".join(sections["storage"])
-    counts = {}
-    for line in sections["counts"]:
-        key, _, value = line.partition("|")
-        if key in {"RUNNING", "PENDING"}:
-            counts[key] = _number(value.strip())
-    jobs = _parse_jobs(queue_raw)
-    nodes, gpus = _parse_nodes(nodes_raw, jobs)
+    all_jobs = _parse_jobs(queue_raw)
+    all_jobs.sort(key=lambda j: (0 if j["status"] == "RUNNING" else 1, j["id"]))
+    active_jobs = sum(1 for job in all_jobs if job["status"] == "RUNNING")
+    queued_jobs = sum(1 for job in all_jobs if job["status"] in {"PENDING", "CONFIGURING"})
+    jobs = all_jobs[:200]
+    nodes, gpus = _parse_nodes(nodes_raw, all_jobs)
     if not nodes:
         raise RuntimeError("no GPU nodes were returned by Slurm")
     storage = _collect_storage(storage_raw, force_du=force_du)
     total_gpus = sum(node["total"] for node in nodes)
     allocated_gpus = sum(min(node["allocated"], node["total"]) for node in nodes)
-    active_jobs = counts.get("RUNNING", sum(1 for job in jobs if job["status"] == "RUNNING"))
-    queued_jobs = counts.get("PENDING", sum(1 for job in jobs if job["status"] in {"PENDING", "CONFIGURING"}))
     return {
         "cluster": {
             "name": "Madar HPC",
@@ -523,6 +578,7 @@ def load_metrics(force: bool = False) -> dict:
     now = time.monotonic()
     with _CACHE_LOCK:
         if not force and _CACHE["payload"] is not None and now - _CACHE["at"] < 8:
+            _sync_du_into_payload(_CACHE["payload"])
             return _CACHE["payload"]
         try:
             payload = _collect_ssh_metrics(force_du=force)

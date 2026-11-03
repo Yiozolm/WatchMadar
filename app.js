@@ -272,7 +272,7 @@ async function fetchSettings() {
     $("#settingSshHost").value = cfg.ssh_host || "madar";
     $("#settingSshUser").value = cfg.ssh_user || "";
     $("#settingSshPort").value = cfg.ssh_port || "";
-    $("#settingSshTimeout").value = cfg.ssh_timeout || 8;
+    $("#settingSshTimeout").value = cfg.ssh_timeout || 20;
   } catch (error) {
     console.error(error);
   }
