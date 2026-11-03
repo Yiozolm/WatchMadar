@@ -93,7 +93,7 @@ function renderStats() {
     $("#storagePercent").textContent = "—";
     $("#storageQuotaFoot").textContent = "磁盘剩余 —";
     $("#storageTrack").style.width = "0%";
-    $("#storageDonut").style.background = `conic-gradient(#233d4c 0 100%)`;
+    $("#storageDonut").style.background = `conic-gradient(var(--track) 0 100%)`;
     $("#storageDonutValue").textContent = "—";
     $("#storageUsed2").textContent = "—";
     $("#storageUnit2").textContent = "GB";
@@ -137,7 +137,7 @@ function renderStats() {
   $("#storageQuotaFoot").textContent = `可用 ${formatSizeText(fsAvailGb)}`;
   $("#storageTrack").style.width = `${Math.max(userPct, homeUsedGb > 0 ? 2 : 0)}%`;
 
-  $("#storageDonut").style.background = `conic-gradient(var(--orange) 0 ${userPct}%, #233d4c ${userPct}% 100%)`;
+  $("#storageDonut").style.background = `conic-gradient(var(--orange) 0 ${userPct}%, var(--track) ${userPct}% 100%)`;
   $("#storageDonutValue").textContent = isInitialScan ? "…" : `${userPct.toFixed(1)}%`;
   $("#storageUsed2").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit2").textContent = isInitialScan ? "" : homeSize.unit;
