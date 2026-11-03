@@ -387,7 +387,7 @@ def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
         if _DU_CACHE["scanning"]:
             return
         age = time.monotonic() - _DU_CACHE["at"]
-        if not force and _DU_CACHE["at"] > 0 and age < 90:
+        if not force and _DU_CACHE["at"] > 0 and age < 300:
             return
         _DU_CACHE["scanning"] = True
 
@@ -526,7 +526,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
             "metric_note": "GPU 占用来自 Slurm 分配；登录节点不允许直接读取计算节点 NVML。",
             "uptime": "—",
             "last_updated": datetime.now(timezone.utc).isoformat(),
-            "refresh_seconds": 10,
+            "refresh_seconds": 60,
             "gpu_total": total_gpus,
             "gpu_online": total_gpus,
             "gpu_utilization": round(allocated_gpus / total_gpus * 100) if total_gpus else 0,
@@ -577,9 +577,11 @@ def load_metrics(force: bool = False) -> dict:
     """Probe Madar over SSH and return disconnected state on failure."""
     now = time.monotonic()
     with _CACHE_LOCK:
-        if not force and _CACHE["payload"] is not None and now - _CACHE["at"] < 8:
-            _sync_du_into_payload(_CACHE["payload"])
-            return _CACHE["payload"]
+        cached = _CACHE["payload"]
+        ttl = 50 if (cached and cached.get("cluster", {}).get("connected")) else 8
+        if not force and cached is not None and now - _CACHE["at"] < ttl:
+            _sync_du_into_payload(cached)
+            return cached
         try:
             payload = _collect_ssh_metrics(force_du=force)
         except (OSError, json.JSONDecodeError, RuntimeError, subprocess.TimeoutExpired) as exc:

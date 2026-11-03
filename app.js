@@ -1,4 +1,4 @@
-const state = { data: null, gpuFilter: "all", refreshMs: 10000, timer: null, activeView: "overview", inFlight: false };
+const state = { data: null, gpuFilter: "all", refreshMs: 60000, timer: null, activeView: "overview", inFlight: false };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -54,10 +54,16 @@ function formatSizeText(gb) {
   return `${number} ${unit}`;
 }
 
+function formatIntervalLabel(ms) {
+  if (!ms || ms <= 0) return "自动刷新已暂停";
+  if (ms >= 60000 && ms % 60000 === 0) return `每 ${ms / 60000} 分钟刷新`;
+  return `每 ${ms / 1000} 秒刷新`;
+}
+
 function renderStats() {
   const { cluster, storage } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
-  const intervalLabel = state.refreshMs > 0 ? `每 ${state.refreshMs / 1000} 秒刷新` : "自动刷新已暂停";
+  const intervalLabel = formatIntervalLabel(state.refreshMs);
 
   $("#sidebarConnection")?.classList.toggle("disconnected", !isLive);
   $("#topRefreshState")?.classList.toggle("disconnected", !isLive);
@@ -224,7 +230,7 @@ function renderSettingsDiag() {
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   badge.textContent = isLive ? "已连接" : "未连接";
   badge.classList.toggle("pending", !isLive);
-  const intervalLabel = state.refreshMs > 0 ? `每 ${state.refreshMs / 1000} 秒自动同步` : "已暂停自动刷新";
+  const intervalLabel = formatIntervalLabel(state.refreshMs);
   if (isLive) {
     diag.textContent = `当前状态：SSH 实时采集正常 · ${intervalLabel}`;
   } else {

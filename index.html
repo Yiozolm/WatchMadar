@@ -89,10 +89,11 @@
                 <label class="field">
                   <span>自动刷新间隔</span>
                   <select id="settingRefreshMs">
-                    <option value="5000">每 5 秒</option>
-                    <option value="10000" selected>每 10 秒（默认）</option>
+                    <option value="15000">每 15 秒</option>
                     <option value="30000">每 30 秒</option>
-                    <option value="60000">每 60 秒</option>
+                    <option value="60000" selected>每 1 分钟（默认）</option>
+                    <option value="120000">每 2 分钟</option>
+                    <option value="300000">每 5 分钟</option>
                     <option value="0">暂停自动刷新</option>
                   </select>
                 </label>
@@ -121,7 +122,7 @@
             </form>
           </article>
         </section>
-        <footer class="footer"><span>© 2026 Madar HPC Resource Monitor</span><span>Data refresh interval <b id="footerRefreshLabel">10s</b> · <a href="/api/metrics" target="_blank">API endpoint</a></span></footer>
+        <footer class="footer"><span>© 2026 Madar HPC Resource Monitor</span><span>Data refresh interval <b id="footerRefreshLabel">60s</b> · <a href="/api/metrics" target="_blank">API endpoint</a></span></footer>
       </main>
     </div>
     <script src="app.js"></script>
