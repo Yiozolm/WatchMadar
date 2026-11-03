@@ -244,15 +244,41 @@ def _parse_df_line(value: str, path: str) -> dict | None:
     }
 
 
-_STORAGE_FAST_COMMAND = r'''printf 'USER|'; id -un; printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1 '''
-_DU_REMOTE_COMMAND = r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'SCRATCH_USER|'; U=$(id -un); for p in "/scratch/$U" "/scratch/users/$U" "/work/$U"; do if [ -d "$p" ]; then printf '%s|' "$p"; timeout 3s du -sk "$p" 2>/dev/null | awk '{print $1}'; break; fi; done; printf '\n'; printf 'HOME_DIRS|\n'; timeout 18s du -k --max-depth=1 -x "$HOME" 2>/dev/null; true'''
+_STORAGE_INIT_COMMAND = r'''printf 'USER|'; id -un; printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1 '''
+_DU_REMOTE_COMMAND = r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'HOME_DIRS|\n'; for d in "$HOME"/*; do [ -e "$d" ] && timeout -k 1 2 du -sk -x "$d" 2>/dev/null; done; true'''
 _DU_LOCK = threading.Lock()
-_DU_CACHE: dict = {"at": 0.0, "home_kb": 0, "subdirs": [], "scratch": None, "scanning": False}
+_INIT_FS_CACHE: dict = {"initialized": False, "user": "user", "home_path": "~", "df_home": None}
+_DU_CACHE: dict = {"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False}
+_DU_REFRESH_SECONDS = 1800  # 30 minutes
+
+
+def _build_user_paths(home_path: str, home_used_gb: float, home_used_tb: float, total_gb: float, quota_tb: float, subdirs: list[dict]) -> list[dict]:
+    paths = [
+        {
+            "path": f"主目录 ({home_path})",
+            "used_gb": home_used_gb,
+            "quota_gb": total_gb,
+            "used_tb": home_used_tb,
+            "quota_tb": quota_tb,
+            "pct": round(min(home_used_gb / max(total_gb, 1.0) * 100, 100), 1),
+            "kind": "home",
+        }
+    ]
+    for sub in subdirs[:3]:
+        paths.append({
+            "path": f"~/ {sub['name']}",
+            "used_gb": sub["used_gb"],
+            "quota_gb": max(home_used_gb, 0.1),
+            "used_tb": round(sub["used_gb"] / 1000, 3),
+            "quota_tb": home_used_tb,
+            "pct": sub["share_pct"],
+            "kind": "subdir",
+        })
+    return paths
 
 
 def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
     home_path = fallback_home
-    scratch_info: dict | None = None
     du_lines: list[str] = []
     in_dirs = False
 
@@ -267,17 +293,7 @@ def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
         key, _, value = line.partition("|")
         if key == "HOME_PATH":
             home_path = value.strip() or home_path
-        elif key == "SCRATCH_USER" and value.strip():
-            s_path, _, s_kb = value.strip().partition("|")
-            kb_val = _number(s_kb.strip())
-            if s_path:
-                scratch_info = {
-                    "path": s_path,
-                    "used_gb": round(kb_val * 1024 / 1e9, 2),
-                    "used_tb": round(kb_val * 1024 / 1e12, 3),
-                }
 
-    home_kb = 0
     raw_subdirs: list[tuple[str, int]] = []
     norm_home = home_path.rstrip("/")
     for dline in du_lines:
@@ -286,22 +302,13 @@ def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
             continue
         kb = _number(parts[0])
         dpath = parts[1].strip().rstrip("/")
-        if dpath == norm_home:
-            home_kb = kb
-        elif dpath.startswith(norm_home + "/"):
+        if dpath.startswith(norm_home + "/"):
             rel_name = dpath[len(norm_home) + 1 :]
             if rel_name and "/" not in rel_name:
                 raw_subdirs.append((rel_name, kb))
 
     raw_subdirs.sort(key=lambda item: item[1], reverse=True)
-    sum_subdirs_kb = sum(kb for _, kb in raw_subdirs)
-    if home_kb < sum_subdirs_kb:
-        home_kb = sum_subdirs_kb
-    elif home_kb > sum_subdirs_kb and raw_subdirs:
-        root_files_kb = home_kb - sum_subdirs_kb
-        if root_files_kb > 1024:
-            raw_subdirs.append(("~ (根目录文件)", root_files_kb))
-            raw_subdirs.sort(key=lambda item: item[1], reverse=True)
+    home_kb = sum(kb for _, kb in raw_subdirs)
 
     subdirs = []
     for name, kb in raw_subdirs[:8]:
@@ -317,9 +324,8 @@ def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
     with _DU_LOCK:
         _DU_CACHE.update({
             "at": time.monotonic(),
-            "home_kb": home_kb if home_kb > 0 else _DU_CACHE["home_kb"],
-            "subdirs": subdirs if subdirs else _DU_CACHE["subdirs"],
-            "scratch": scratch_info if scratch_info is not None else _DU_CACHE["scratch"],
+            "home_kb": home_kb if (home_kb > 0 or not _DU_CACHE["home_kb"]) else _DU_CACHE["home_kb"],
+            "subdirs": subdirs if (subdirs or not _DU_CACHE["subdirs"]) else _DU_CACHE["subdirs"],
             "scanning": False,
         })
 
@@ -333,53 +339,19 @@ def _sync_du_into_payload(payload: dict) -> None:
     with _DU_LOCK:
         home_kb = _DU_CACHE["home_kb"]
         subdirs = list(_DU_CACHE["subdirs"])
-        scratch_cached = _DU_CACHE["scratch"]
         scanning = _DU_CACHE["scanning"]
     home_used_bytes = home_kb * 1024
     home_used_gb = round(home_used_bytes / 1e9, 2)
     home_used_tb = round(home_used_bytes / 1e12, 3)
     total_gb = max(storage.get("fs_total_gb", 1.0), 1.0)
+    quota_tb = storage.get("quota_tb", 0.0)
+    home_path = storage.get("home_path", "~")
     storage["scanning"] = scanning
     storage["home_used_gb"] = home_used_gb
     storage["home_used_tb"] = home_used_tb
     storage["used_tb"] = home_used_tb
     storage["subdirs"] = subdirs
-    home_path = storage.get("home_path", "~")
-    mount = storage.get("mount", "/")
-    fs_used_gb = storage.get("fs_used_gb", 0.0)
-    fs_used_tb = storage.get("fs_used_tb", 0.0)
-    quota_tb = storage.get("quota_tb", 0.0)
-    paths = [
-        {
-            "path": f"主目录 ({home_path})",
-            "used_gb": home_used_gb,
-            "quota_gb": total_gb,
-            "used_tb": home_used_tb,
-            "quota_tb": quota_tb,
-            "pct": round(min(home_used_gb / total_gb * 100, 100), 1),
-            "kind": "home",
-        }
-    ]
-    if scratch_cached:
-        paths.append({
-            "path": f"Scratch ({scratch_cached['path']})",
-            "used_gb": scratch_cached["used_gb"],
-            "quota_gb": total_gb,
-            "used_tb": scratch_cached["used_tb"],
-            "quota_tb": quota_tb,
-            "pct": round(min(scratch_cached["used_gb"] / total_gb * 100, 100), 1),
-            "kind": "scratch",
-        })
-    paths.append({
-        "path": f"所在磁盘 ({mount})",
-        "used_gb": fs_used_gb,
-        "quota_gb": total_gb,
-        "used_tb": fs_used_tb,
-        "quota_tb": quota_tb,
-        "pct": round(min(fs_used_gb / total_gb * 100, 100), 1),
-        "kind": "mount",
-    })
-    storage["paths"] = paths
+    storage["paths"] = _build_user_paths(home_path, home_used_gb, home_used_tb, total_gb, quota_tb, subdirs)
 
 
 def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
@@ -387,15 +359,22 @@ def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
         if _DU_CACHE["scanning"]:
             return
         age = time.monotonic() - _DU_CACHE["at"]
-        if not force and _DU_CACHE["at"] > 0 and age < 300:
+        if not force and _DU_CACHE["at"] > 0 and age < _DU_REFRESH_SECONDS:
             return
         _DU_CACHE["scanning"] = True
 
     def _worker():
         time.sleep(1.0)
         try:
-            raw = _run_remote(_DU_REMOTE_COMMAND, timeout=max(SSH_TIMEOUT, 25))
+            raw = _run_remote(_DU_REMOTE_COMMAND, timeout=45)
             _parse_and_store_du(raw, fallback_home=home_path)
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            if partial.strip():
+                _parse_and_store_du(partial, fallback_home=home_path)
+            else:
+                with _DU_LOCK:
+                    _DU_CACHE["scanning"] = False
         except Exception as exc:
             print(f"[madar-dashboard] background du scan failed: {exc}")
             with _DU_LOCK:
@@ -405,66 +384,44 @@ def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
 
 
 def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
-    if raw is None:
-        raw = _run_remote(_STORAGE_FAST_COMMAND, timeout=max(SSH_TIMEOUT, 8))
-    user = "user"
-    home_path = "~"
-    df_home: dict | None = None
+    if raw:
+        user = _INIT_FS_CACHE["user"]
+        home_path = _INIT_FS_CACHE["home_path"]
+        df_home = _INIT_FS_CACHE["df_home"]
+        for line in raw.splitlines():
+            key, _, value = line.partition("|")
+            if key == "USER":
+                user = value.strip() or user
+            elif key == "HOME_PATH":
+                home_path = value.strip() or home_path
+            elif key == "DF_HOME":
+                df_home = _parse_df_line(value, home_path)
+        if df_home:
+            _INIT_FS_CACHE.update({
+                "initialized": True,
+                "user": user,
+                "home_path": home_path,
+                "df_home": df_home,
+            })
 
-    for line in raw.splitlines():
-        key, _, value = line.partition("|")
-        if key == "USER":
-            user = value.strip() or user
-        elif key == "HOME_PATH":
-            home_path = value.strip() or home_path
-        elif key == "DF_HOME":
-            df_home = _parse_df_line(value, home_path)
-
-    if not df_home:
+    if not _INIT_FS_CACHE["initialized"] or not _INIT_FS_CACHE["df_home"]:
         raise RuntimeError("filesystem statistics for $HOME were empty")
+
+    user = _INIT_FS_CACHE["user"]
+    home_path = _INIT_FS_CACHE["home_path"]
+    df_home = _INIT_FS_CACHE["df_home"]
 
     _trigger_du_scan(home_path=home_path, force=force_du)
 
     with _DU_LOCK:
         home_kb = _DU_CACHE["home_kb"]
         subdirs = list(_DU_CACHE["subdirs"])
-        scratch_cached = _DU_CACHE["scratch"]
         scanning = _DU_CACHE["scanning"]
 
     home_used_bytes = home_kb * 1024
     home_used_gb = round(home_used_bytes / 1e9, 2)
     home_used_tb = round(home_used_bytes / 1e12, 3)
-
-    paths = [
-        {
-            "path": f"主目录 ({home_path})",
-            "used_gb": home_used_gb,
-            "quota_gb": df_home["total_gb"],
-            "used_tb": home_used_tb,
-            "quota_tb": df_home["quota_tb"],
-            "pct": round(min(home_used_bytes / max(df_home["total_bytes"], 1) * 100, 100), 1),
-            "kind": "home",
-        }
-    ]
-    if scratch_cached:
-        paths.append({
-            "path": f"Scratch ({scratch_cached['path']})",
-            "used_gb": scratch_cached["used_gb"],
-            "quota_gb": df_home["total_gb"],
-            "used_tb": scratch_cached["used_tb"],
-            "quota_tb": df_home["quota_tb"],
-            "pct": round(min(scratch_cached["used_gb"] / max(df_home["total_gb"], 1) * 100, 100), 1),
-            "kind": "scratch",
-        })
-    paths.append({
-        "path": f"所在磁盘 ({df_home['mount']})",
-        "used_gb": df_home["used_gb"],
-        "quota_gb": df_home["total_gb"],
-        "used_tb": df_home["used_tb"],
-        "quota_tb": df_home["quota_tb"],
-        "pct": round(min(df_home["used_bytes"] / max(df_home["total_bytes"], 1) * 100, 100), 1),
-        "kind": "mount",
-    })
+    paths = _build_user_paths(home_path, home_used_gb, home_used_tb, df_home["total_gb"], df_home["quota_tb"], subdirs)
 
     return {
         "user": user,
@@ -488,10 +445,11 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
 
 
 def _collect_ssh_metrics(force_du: bool = False) -> dict:
-    probe_command = (
-        r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N" 2>/dev/null; printf '__MADAR_STORAGE__\n'; '''
-        + _STORAGE_FAST_COMMAND
-    )
+    need_init_fs = not _INIT_FS_CACHE["initialized"]
+    probe_command = r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N" 2>/dev/null'''
+    if need_init_fs:
+        probe_command += r'''; printf '__MADAR_STORAGE__\n'; ''' + _STORAGE_INIT_COMMAND
+
     raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 20))
     sections = {"nodes": [], "queue": [], "storage": []}
     current = None
@@ -504,7 +462,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
             sections[current].append(line)
     nodes_raw = "\n".join(sections["nodes"])
     queue_raw = "\n".join(sections["queue"])
-    storage_raw = "\n".join(sections["storage"])
+    storage_raw = "\n".join(sections["storage"]) if need_init_fs else None
     all_jobs = _parse_jobs(queue_raw)
     all_jobs.sort(key=lambda j: (0 if j["status"] == "RUNNING" else 1, j["id"]))
     active_jobs = sum(1 for job in all_jobs if job["status"] == "RUNNING")
@@ -568,8 +526,9 @@ def update_settings(data: dict) -> dict:
             except (TypeError, ValueError):
                 pass
         _CACHE.update({"at": 0.0, "payload": None})
+        _INIT_FS_CACHE.update({"initialized": False, "user": "user", "home_path": "~", "df_home": None})
     with _DU_LOCK:
-        _DU_CACHE.update({"at": 0.0, "home_kb": 0, "subdirs": [], "scratch": None, "scanning": False})
+        _DU_CACHE.update({"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False})
     return get_settings()
 
 
