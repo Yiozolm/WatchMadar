@@ -804,6 +804,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._write_bytes(b'{"status":"ok"}', "application/json")
             return
 
+        if path == "/favicon.ico":
+            logo_file = ROOT / "logo.png"
+            if logo_file.exists():
+                self._write_bytes(logo_file.read_bytes(), "image/png")
+                return
+
         try:
             super().do_GET()
         except _DISCONNECT_ERRORS:
