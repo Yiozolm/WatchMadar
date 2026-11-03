@@ -76,39 +76,54 @@ function formatSizeText(gb) {
   return `${number} ${unit}`;
 }
 
-function buildSubdirPieGradient(subdirs) {
-  if (!subdirs || !subdirs.length) {
-    return `conic-gradient(var(--track) 0 100%)`;
-  }
-  const totalShare = subdirs.reduce((sum, item) => sum + (Number(item.share_pct) || 0), 0);
-  if (totalShare <= 0) {
-    return `conic-gradient(var(--track) 0 100%)`;
+const HOME_QUOTA_GB = 50;
+
+function buildSubdirPieGradient(items, quotaGb = HOME_QUOTA_GB, totalUsedGb = 0) {
+  const capGb = Math.max(Number(quotaGb) || HOME_QUOTA_GB, 0.1);
+  if (!items || !items.length) {
+    const fallbackPct = Math.min(Math.max((Number(totalUsedGb) || 0) / capGb * 100, 0), 100);
+    return `conic-gradient(var(--orange) 0 ${fallbackPct.toFixed(2)}%, var(--track) ${fallbackPct.toFixed(2)}% 100%)`;
   }
   let cursor = 0;
-  const stops = subdirs.map((item, idx) => {
-    const rawPct = (Number(item.share_pct) || 0) / totalShare * 100;
+  const stops = [];
+  items.forEach((item, idx) => {
+    const usedGb = Number(item.used_gb ?? (item.used_mb ? item.used_mb / 1000 : 0)) || 0;
+    const rawPct = (usedGb / capGb) * 100;
+    if (rawPct <= 0) return;
     const start = cursor;
-    const end = idx === subdirs.length - 1 ? 100 : Math.min(cursor + rawPct, 100);
+    const end = Math.min(cursor + rawPct, 100);
     cursor = end;
     const color = PIE_COLORS[idx % PIE_COLORS.length];
-    return `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+    stops.push(`${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`);
   });
+  if (!stops.length) {
+    return `conic-gradient(var(--track) 0 100%)`;
+  }
+  if (cursor < 100) {
+    stops.push(`var(--track) ${cursor.toFixed(2)}% 100%`);
+  }
   return `conic-gradient(${stops.join(", ")})`;
 }
 
-function buildSubdirLinearGradient(subdirs) {
-  if (!subdirs || !subdirs.length) return "";
-  const totalShare = subdirs.reduce((sum, item) => sum + (Number(item.share_pct) || 0), 0);
-  if (totalShare <= 0) return "";
+function buildSubdirLinearGradient(items, quotaGb = HOME_QUOTA_GB) {
+  const capGb = Math.max(Number(quotaGb) || HOME_QUOTA_GB, 0.1);
+  if (!items || !items.length) return "";
   let cursor = 0;
-  const stops = subdirs.map((item, idx) => {
-    const rawPct = (Number(item.share_pct) || 0) / totalShare * 100;
+  const stops = [];
+  items.forEach((item, idx) => {
+    const usedGb = Number(item.used_gb ?? (item.used_mb ? item.used_mb / 1000 : 0)) || 0;
+    const rawPct = (usedGb / capGb) * 100;
+    if (rawPct <= 0) return;
     const start = cursor;
-    const end = idx === subdirs.length - 1 ? 100 : Math.min(cursor + rawPct, 100);
+    const end = Math.min(cursor + rawPct, 100);
     cursor = end;
     const color = PIE_COLORS[idx % PIE_COLORS.length];
-    return `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+    stops.push(`${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`);
   });
+  if (!stops.length) return "";
+  if (cursor < 100) {
+    stops.push(`var(--track) ${cursor.toFixed(2)}% 100%`);
+  }
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 
@@ -150,15 +165,15 @@ function renderStats() {
     $("#storageUsed").textContent = "—";
     $("#storageUnit").textContent = " GB";
     $("#storagePercent").textContent = "—";
-    $("#storageQuotaFoot").textContent = "SSH 主目录";
+    $("#storageQuotaFoot").textContent = "配额 50 GB";
     $("#storageTrack").style.width = "0%";
     $("#storageTrack").style.background = "";
     $("#storageDonut").style.background = `conic-gradient(var(--track) 0 100%)`;
     $("#storageDonutValue").textContent = "—";
-    $("#storageDonutLabel").textContent = "目录构成";
+    $("#storageDonutLabel").textContent = "共 50 GB";
     $("#storageUsed2").textContent = "—";
     $("#storageUnit2").textContent = "GB";
-    $("#storageTotal2").textContent = "未连接";
+    $("#storageTotal2").textContent = "总容量 50 GB";
     $("#storageHomeFoot").innerHTML = "主目录 <b>—</b>";
     $("#storageHealthState").innerHTML = "<i></i>未连接";
     $("#lastUpdated").textContent = "未连接";
@@ -176,6 +191,8 @@ function renderStats() {
   $("#sidebarAvatar").textContent = sshUser.slice(0, 1).toUpperCase();
 
   const maintCount = Number(cluster.gpu_maintenance) || 0;
+  const restrictedCount = Number(cluster.gpu_restricted) || 0;
+  const unavailableCount = maintCount + restrictedCount;
   const idleCount = Number(cluster.gpu_idle) || 0;
 
   $("#gpuOnline").textContent = cluster.gpu_online;
@@ -187,47 +204,49 @@ function renderStats() {
   $("#queuedJobsFoot").textContent = `${cluster.queued_jobs} queued`;
 
   const gpuFoot = $("#gpuFootStatus");
-  if (maintCount > 0) {
+  if (maintCount > 0 && restrictedCount > 0) {
+    gpuFoot.textContent = `${maintCount} 维护 · ${restrictedCount} 受限(rcadmin)`;
+    gpuFoot.className = "trend warn";
+  } else if (maintCount > 0) {
     gpuFoot.textContent = `${maintCount} 张维护/排空中`;
     gpuFoot.className = "trend warn";
+  } else if (restrictedCount > 0) {
+    gpuFoot.textContent = `${restrictedCount} 张受限专用 (rcadmin)`;
+    gpuFoot.className = "trend neutral";
   } else {
     gpuFoot.textContent = "全部在线";
     gpuFoot.className = "trend up";
   }
 
   const utilFoot = $("#utilFootStatus");
-  if (idleCount === 0 && maintCount > 0) {
+  if (idleCount === 0 && unavailableCount > 0) {
     utilFoot.textContent = "可用卡 100% 满载 (0 空闲)";
   } else {
     utilFoot.textContent = `空闲 ${idleCount} 张 · 实时分配率`;
   }
 
   const homeUsedGb = storage.home_used_gb ?? (storage.used_tb * 1000);
+  const quotaGb = storage.home_quota_gb || HOME_QUOTA_GB;
+  const availGb = Math.max(quotaGb - homeUsedGb, 0);
+  const usedQuotaPct = Math.min((homeUsedGb / quotaGb) * 100, 100);
   const subdirs = storage.subdirs || [];
+  const pieItems = storage.paths?.length ? storage.paths : subdirs;
   const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0 && !subdirs.length);
   const homeSize = formatSizeParts(homeUsedGb);
-  const topSub = subdirs[0] || null;
 
   $("#storageUsed").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit").textContent = isInitialScan ? "" : ` ${homeSize.unit}`;
   $("#storagePercent").textContent = homePath;
-  $("#storageQuotaFoot").textContent = topSub ? `最大项 ${topSub.name} (${topSub.share_pct}%)` : (storage.scanning ? "统计目录中…" : "SSH 主目录");
-  $("#storageTrack").style.width = subdirs.length ? "100%" : (homeUsedGb > 0 ? "100%" : "0%");
-  $("#storageTrack").style.background = buildSubdirLinearGradient(subdirs);
+  $("#storageQuotaFoot").textContent = `剩余 ${formatSizeText(availGb)} / ${quotaGb} GB`;
+  $("#storageTrack").style.width = pieItems.length ? "100%" : `${Math.max(usedQuotaPct, homeUsedGb > 0 ? 2 : 0)}%`;
+  $("#storageTrack").style.background = buildSubdirLinearGradient(pieItems, quotaGb);
 
-  $("#storageDonut").style.background = buildSubdirPieGradient(subdirs);
-  $("#storageDonutValue").textContent = isInitialScan ? "…" : (topSub ? `${Number(topSub.share_pct).toFixed(0)}%` : "0%");
-  $("#storageDonutLabel").textContent = topSub ? topSub.name : "目录构成";
+  $("#storageDonut").style.background = buildSubdirPieGradient(pieItems, quotaGb, homeUsedGb);
+  $("#storageDonutValue").textContent = isInitialScan ? "…" : `${usedQuotaPct.toFixed(1)}%`;
+  $("#storageDonutLabel").textContent = `共 ${quotaGb} GB`;
   $("#storageUsed2").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit2").textContent = isInitialScan ? "" : homeSize.unit;
-  if (subdirs.length) {
-    $("#storageTotal2").innerHTML = subdirs.slice(0, 4).map((item, idx) => {
-      const color = PIE_COLORS[idx % PIE_COLORS.length];
-      return `<span class="pie-legend-item" title="${escapeHtml(item.name)}: ${item.share_pct}%"><i style="background:${color}"></i><b>${escapeHtml(item.name)}</b><em>${item.share_pct}%</em></span>`;
-    }).join("");
-  } else {
-    $("#storageTotal2").textContent = storage.scanning ? "正在统计用户目录各子项占比…" : "主目录暂无子目录数据";
-  }
+  $("#storageTotal2").innerHTML = `剩余可用 <b>${escapeHtml(formatSizeText(availGb))}</b> / 共 <b>${quotaGb} GB</b>`;
   $("#storageHomeFoot").innerHTML = `主目录 <b>${escapeHtml(homePath)}</b>`;
   $("#storageHealthState").innerHTML = storage.scanning ? "<i></i>后台统计目录中…" : "<i></i>用户目录正常";
   $("#lastUpdated").textContent = formatTime(cluster.last_updated);
@@ -258,12 +277,13 @@ function renderGpus() {
     const rightMeta = gpu.temperature != null ? `<b>${gpu.temperature}°</b>` : gpu.node_state ? `STATE <b>${escapeHtml(gpu.node_state)}</b>` : "<b>—</b>";
     const isMaint = gpu.status === "maintenance";
     const isDown = gpu.substatus === "down";
+    const isRestricted = gpu.substatus === "restricted";
     const isBusyDrain = gpu.status === "busy" && (gpu.substatus === "drain" || gpu.substatus === "down" || gpu.substatus === "reserved");
-    const tileClass = isMaint ? (isDown ? "down" : "maintenance") : isBusyDrain ? "busy-drain" : "";
-    const dotClass = gpu.status === "idle" ? "idle" : isMaint ? (isDown ? "down" : "maintenance") : isBusyDrain ? "busy-drain" : "";
+    const tileClass = isMaint ? (isDown ? "down" : isRestricted ? "restricted" : "maintenance") : isBusyDrain ? "busy-drain" : "";
+    const dotClass = gpu.status === "idle" ? "idle" : isMaint ? (isDown ? "down" : isRestricted ? "restricted" : "maintenance") : isBusyDrain ? "busy-drain" : "";
     const utilDisplay = gpu.util_display ?? `${gpu.utilization}%`;
     const barHtml = isMaint
-      ? `<span class="maint ${isDown ? "down" : ""}" style="width:100%"></span>`
+      ? `<span class="maint ${isDown ? "down" : isRestricted ? "restricted" : ""}" style="width:100%"></span>`
       : `<span class="${utilClass(gpu.utilization)}" style="width:${gpu.utilization}%"></span>`;
     const tooltipParts = [`${gpu.node} / ${gpu.model}`];
     if (gpu.node_state) tooltipParts.push(`节点状态: ${gpu.node_state}`);
@@ -293,11 +313,12 @@ function renderStorage() {
     const emptyMsg = state.data.storage.scanning ? "正在后台统计用户目录各文件夹占比…" : "主目录为空或暂无子目录数据";
     $("#storagePaths").innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
   } else {
+    const quotaGb = state.data.storage.home_quota_gb || HOME_QUOTA_GB;
     $("#storagePaths").innerHTML = paths.map((item, idx) => {
       const usedGb = item.used_gb ?? (item.used_tb * 1000);
-      const pct = Number(item.pct ?? 0);
+      const pct = Number(item.pct ?? ((usedGb / quotaGb) * 100));
       const color = PIE_COLORS[idx % PIE_COLORS.length];
-      return `<div class="path-row" title="${escapeHtml(item.path)} (${pct}%)"><span class="path-name"><i class="path-dot" style="background:${color}"></i>${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%;background:${color}"></span></div><span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span></div>`;
+      return `<div class="path-row" title="${escapeHtml(item.path)}: ${formatSizeText(usedGb)} (占 50GB 的 ${pct.toFixed(1)}%)"><span class="path-name"><i class="path-dot" style="background:${color}"></i>${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%;background:${color}"></span></div><span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span></div>`;
     }).join("");
   }
 

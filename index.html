@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#08131f" />
     <title>Madar HPC · Resource Monitor</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=4" />
   </head>
   <body>
     <div class="app-shell">
@@ -56,15 +56,15 @@
 
         <section class="content-grid">
           <article class="panel gpu-panel" id="gpuSection">
-            <div class="panel-head"><div><p class="eyebrow">COMPUTE / GPU POOL</p><h2>GPU 使用情况</h2></div><div class="panel-tools"><div class="segmented" id="gpuFilter"><button class="selected" data-filter="all">全部</button><button data-filter="busy">使用中</button><button data-filter="idle">空闲</button><button data-filter="maintenance">维护/排空</button></div><button class="more-button" title="更多选项">···</button></div></div>
-            <div class="gpu-summary"><div class="legend"><span><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span><span><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span><span><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span></div><span class="small-muted" id="metricNote">未连接</span></div>
+            <div class="panel-head"><div><p class="eyebrow">COMPUTE / GPU POOL</p><h2>GPU 使用情况</h2></div><div class="panel-tools"><div class="segmented" id="gpuFilter"><button class="selected" data-filter="all">全部</button><button data-filter="busy">使用中</button><button data-filter="idle">空闲</button><button data-filter="maintenance">维护/受限</button></div><button class="more-button" title="更多选项">···</button></div></div>
+            <div class="gpu-summary"><div class="legend"><span><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span><span><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span><span><i class="legend-dot purple"></i>受限专用 <b>ADMIN</b></span><span><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span></div><span class="small-muted" id="metricNote">未连接</span></div>
             <div class="gpu-grid" id="gpuGrid"></div>
             <div class="panel-foot"><span>显示 <b id="gpuShown">0</b> / <b id="gpuCount">0</b> 张 GPU</span><button class="text-button" data-view="gpu">查看全部节点 <span>→</span></button></div>
           </article>
 
           <article class="panel storage-panel" id="storageSection">
             <div class="panel-head"><div><p class="eyebrow">SSH USER / HOME STORAGE</p><h2>用户目录空间</h2></div><button class="more-button" title="更多选项">···</button></div>
-            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span id="storageDonutLabel">目录构成</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong><div class="storage-pie-legend" id="storageTotal2">等待扫描目录构成…</div><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
+            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span id="storageDonutLabel">共 50 GB</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong><span id="storageTotal2">总容量 50 GB</span><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
             <div class="storage-paths" id="storagePaths"></div>
             <div class="panel-foot"><span id="storageHomeFoot">主目录 <b>—</b></span><button class="text-button" data-view="storage">查看子目录 <span>→</span></button></div>
           </article>
@@ -125,6 +125,6 @@
         <footer class="footer"><span>© 2026 Madar HPC Resource Monitor</span><span>Data refresh interval <b id="footerRefreshLabel">60s</b> · <a href="/api/metrics" target="_blank">API endpoint</a></span></footer>
       </main>
     </div>
-    <script src="app.js"></script>
+    <script src="app.js?v=4"></script>
   </body>
 </html>
