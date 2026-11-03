@@ -4,6 +4,20 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#039;"}[ch]));
 
+const REASON_LABELS = {
+  Priority: "优先级排队",
+  Resources: "等待资源",
+  Dependency: "等待前置依赖",
+  DependencyNeverSatisfied: "依赖无法满足",
+  JobArrayTaskLimit: "数组并发限制",
+  JobHeldUser: "用户挂起",
+  JobHeldAdmin: "管理员挂起",
+  ReqNodeNotAvail: "节点维护中",
+  QOSMaxGRESPerUser: "GPU配额上限",
+  QOSMaxJobsPerUserLimit: "任务数上限",
+  AssocMaxJobsLimit: "账户任务上限",
+};
+
 function formatTime(iso) {
   if (!iso) return "刚刚更新";
   const date = new Date(iso);
@@ -31,6 +45,8 @@ const DISCONNECTED_DATA = {
     last_updated: null,
     gpu_total: 0,
     gpu_online: 0,
+    gpu_maintenance: 0,
+    gpu_idle: 0,
     gpu_utilization: 0,
     active_jobs: 0,
     queued_jobs: 0,
@@ -42,16 +58,58 @@ const DISCONNECTED_DATA = {
   storage: { quota_tb: 0, used_tb: 0, paths: [], users: [] },
 };
 
+const PIE_COLORS = ["#ffb46a", "#5fa9ff", "#ab88ff", "#38d6a1", "#f472b6", "#38bdf8"];
+
 function formatSizeParts(gb) {
   const val = Number(gb) || 0;
   if (val >= 1000) return { number: (val / 1000).toFixed(2), unit: "TB" };
   if (val >= 1) return { number: val.toFixed(1), unit: "GB" };
-  return { number: Math.max(val * 1000, 0).toFixed(0), unit: "MB" };
+  const mb = Math.max(val * 1000, 0);
+  if (mb >= 10) return { number: mb.toFixed(0), unit: "MB" };
+  if (mb >= 0.1) return { number: mb.toFixed(1), unit: "MB" };
+  if (val > 0) return { number: Math.max(val * 1e6, 1).toFixed(0), unit: "KB" };
+  return { number: "0", unit: "MB" };
 }
 
 function formatSizeText(gb) {
   const { number, unit } = formatSizeParts(gb);
   return `${number} ${unit}`;
+}
+
+function buildSubdirPieGradient(subdirs) {
+  if (!subdirs || !subdirs.length) {
+    return `conic-gradient(var(--track) 0 100%)`;
+  }
+  const totalShare = subdirs.reduce((sum, item) => sum + (Number(item.share_pct) || 0), 0);
+  if (totalShare <= 0) {
+    return `conic-gradient(var(--track) 0 100%)`;
+  }
+  let cursor = 0;
+  const stops = subdirs.map((item, idx) => {
+    const rawPct = (Number(item.share_pct) || 0) / totalShare * 100;
+    const start = cursor;
+    const end = idx === subdirs.length - 1 ? 100 : Math.min(cursor + rawPct, 100);
+    cursor = end;
+    const color = PIE_COLORS[idx % PIE_COLORS.length];
+    return `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+  });
+  return `conic-gradient(${stops.join(", ")})`;
+}
+
+function buildSubdirLinearGradient(subdirs) {
+  if (!subdirs || !subdirs.length) return "";
+  const totalShare = subdirs.reduce((sum, item) => sum + (Number(item.share_pct) || 0), 0);
+  if (totalShare <= 0) return "";
+  let cursor = 0;
+  const stops = subdirs.map((item, idx) => {
+    const rawPct = (Number(item.share_pct) || 0) / totalShare * 100;
+    const start = cursor;
+    const end = idx === subdirs.length - 1 ? 100 : Math.min(cursor + rawPct, 100);
+    cursor = end;
+    const color = PIE_COLORS[idx % PIE_COLORS.length];
+    return `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+  });
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 
 function formatIntervalLabel(ms) {
@@ -87,17 +145,20 @@ function renderStats() {
     $("#jobNavCount").textContent = "—";
     $("#queuedJobsFoot").textContent = "— queued";
     $("#gpuFootStatus").textContent = "未连接";
+    $("#gpuFootStatus").className = "trend up";
     $("#utilFootStatus").textContent = "未连接";
     $("#storageUsed").textContent = "—";
     $("#storageUnit").textContent = " GB";
     $("#storagePercent").textContent = "—";
-    $("#storageQuotaFoot").textContent = "磁盘剩余 —";
+    $("#storageQuotaFoot").textContent = "SSH 主目录";
     $("#storageTrack").style.width = "0%";
+    $("#storageTrack").style.background = "";
     $("#storageDonut").style.background = `conic-gradient(var(--track) 0 100%)`;
     $("#storageDonutValue").textContent = "—";
+    $("#storageDonutLabel").textContent = "目录构成";
     $("#storageUsed2").textContent = "—";
     $("#storageUnit2").textContent = "GB";
-    $("#storageTotal2").textContent = "所在分区可用 —";
+    $("#storageTotal2").textContent = "未连接";
     $("#storageHomeFoot").innerHTML = "主目录 <b>—</b>";
     $("#storageHealthState").innerHTML = "<i></i>未连接";
     $("#lastUpdated").textContent = "未连接";
@@ -114,6 +175,9 @@ function renderStats() {
   $("#sidebarHome").textContent = homePath;
   $("#sidebarAvatar").textContent = sshUser.slice(0, 1).toUpperCase();
 
+  const maintCount = Number(cluster.gpu_maintenance) || 0;
+  const idleCount = Number(cluster.gpu_idle) || 0;
+
   $("#gpuOnline").textContent = cluster.gpu_online;
   $("#gpuTotal").textContent = cluster.gpu_total;
   $("#gpuNavCount").textContent = cluster.gpu_total;
@@ -121,32 +185,54 @@ function renderStats() {
   $("#activeJobs").textContent = cluster.active_jobs;
   $("#jobNavCount").textContent = cluster.active_jobs + cluster.queued_jobs;
   $("#queuedJobsFoot").textContent = `${cluster.queued_jobs} queued`;
-  $("#gpuFootStatus").textContent = "在线";
-  $("#utilFootStatus").textContent = "实时分配率";
+
+  const gpuFoot = $("#gpuFootStatus");
+  if (maintCount > 0) {
+    gpuFoot.textContent = `${maintCount} 张维护/排空中`;
+    gpuFoot.className = "trend warn";
+  } else {
+    gpuFoot.textContent = "全部在线";
+    gpuFoot.className = "trend up";
+  }
+
+  const utilFoot = $("#utilFootStatus");
+  if (idleCount === 0 && maintCount > 0) {
+    utilFoot.textContent = "可用卡 100% 满载 (0 空闲)";
+  } else {
+    utilFoot.textContent = `空闲 ${idleCount} 张 · 实时分配率`;
+  }
 
   const homeUsedGb = storage.home_used_gb ?? (storage.used_tb * 1000);
-  const fsTotalGb = storage.fs_total_gb ?? (storage.quota_tb * 1000);
-  const fsAvailGb = storage.fs_avail_gb ?? Math.max(fsTotalGb - (storage.fs_used_gb ?? homeUsedGb), 0);
-  const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0);
+  const subdirs = storage.subdirs || [];
+  const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0 && !subdirs.length);
   const homeSize = formatSizeParts(homeUsedGb);
-  const userPct = fsTotalGb > 0 ? Math.min((homeUsedGb / fsTotalGb) * 100, 100) : 0;
+  const topSub = subdirs[0] || null;
 
   $("#storageUsed").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit").textContent = isInitialScan ? "" : ` ${homeSize.unit}`;
   $("#storagePercent").textContent = homePath;
-  $("#storageQuotaFoot").textContent = `可用 ${formatSizeText(fsAvailGb)}`;
-  $("#storageTrack").style.width = `${Math.max(userPct, homeUsedGb > 0 ? 2 : 0)}%`;
+  $("#storageQuotaFoot").textContent = topSub ? `最大项 ${topSub.name} (${topSub.share_pct}%)` : (storage.scanning ? "统计目录中…" : "SSH 主目录");
+  $("#storageTrack").style.width = subdirs.length ? "100%" : (homeUsedGb > 0 ? "100%" : "0%");
+  $("#storageTrack").style.background = buildSubdirLinearGradient(subdirs);
 
-  $("#storageDonut").style.background = `conic-gradient(var(--orange) 0 ${userPct}%, var(--track) ${userPct}% 100%)`;
-  $("#storageDonutValue").textContent = isInitialScan ? "…" : `${userPct.toFixed(1)}%`;
+  $("#storageDonut").style.background = buildSubdirPieGradient(subdirs);
+  $("#storageDonutValue").textContent = isInitialScan ? "…" : (topSub ? `${Number(topSub.share_pct).toFixed(0)}%` : "0%");
+  $("#storageDonutLabel").textContent = topSub ? topSub.name : "目录构成";
   $("#storageUsed2").textContent = isInitialScan ? "扫描中" : homeSize.number;
   $("#storageUnit2").textContent = isInitialScan ? "" : homeSize.unit;
-  $("#storageTotal2").innerHTML = `分区可用 <b>${escapeHtml(formatSizeText(fsAvailGb))}</b> / 共 ${escapeHtml(formatSizeText(fsTotalGb))}`;
+  if (subdirs.length) {
+    $("#storageTotal2").innerHTML = subdirs.slice(0, 4).map((item, idx) => {
+      const color = PIE_COLORS[idx % PIE_COLORS.length];
+      return `<span class="pie-legend-item" title="${escapeHtml(item.name)}: ${item.share_pct}%"><i style="background:${color}"></i><b>${escapeHtml(item.name)}</b><em>${item.share_pct}%</em></span>`;
+    }).join("");
+  } else {
+    $("#storageTotal2").textContent = storage.scanning ? "正在统计用户目录各子项占比…" : "主目录暂无子目录数据";
+  }
   $("#storageHomeFoot").innerHTML = `主目录 <b>${escapeHtml(homePath)}</b>`;
   $("#storageHealthState").innerHTML = storage.scanning ? "<i></i>后台统计目录中…" : "<i></i>用户目录正常";
   $("#lastUpdated").textContent = formatTime(cluster.last_updated);
   $("#uptime").textContent = cluster.uptime;
-  $("#clusterStatus").textContent = cluster.status === "healthy" ? "运行正常" : "需关注";
+  $("#clusterStatus").textContent = maintCount > 0 ? `运行正常 (${maintCount}卡维护)` : cluster.status === "healthy" ? "运行正常" : "需关注";
   renderSpark();
 }
 
@@ -160,14 +246,33 @@ function renderGpus() {
   }
   const all = state.data.gpus;
   const filtered = all.filter((gpu) => state.gpuFilter === "all" || gpu.status === state.gpuFilter);
+  if (!filtered.length) {
+    const emptyLabel = state.gpuFilter === "maintenance" ? "当前没有处于维护或排空状态的 GPU" : state.gpuFilter === "idle" ? "当前所有可用 GPU 均已满载，无空闲卡" : "无匹配的 GPU 节点";
+    $("#gpuGrid").innerHTML = `<div class="empty-state">${emptyLabel}</div>`;
+    $("#gpuShown").textContent = 0;
+    $("#gpuCount").textContent = state.data.cluster.gpu_total;
+    return;
+  }
   $("#gpuGrid").innerHTML = filtered.map((gpu) => {
     const memory = gpu.memory_used == null || gpu.memory_total == null ? "—" : `${gpu.memory_used}/${gpu.memory_total}G`;
-    const temperature = gpu.temperature == null ? "—" : `${gpu.temperature}°`;
-    return `<div class="gpu-tile" title="${escapeHtml(gpu.node)} / ${escapeHtml(gpu.model)}">
-    <div class="tile-head"><span>${escapeHtml(gpu.id)}</span><i class="gpu-status ${gpu.status === "idle" ? "idle" : ""}"></i></div>
-    <div class="gpu-util"><strong>${gpu.utilization}%</strong><span>${escapeHtml(gpu.util_label || "GPU UTIL")}</span></div>
-    <div class="util-bar"><span class="${utilClass(gpu.utilization)}" style="width:${gpu.utilization}%"></span></div>
-    <div class="gpu-meta"><span>MEM <b>${memory}</b></span><span><b>${temperature}</b></span></div>
+    const rightMeta = gpu.temperature != null ? `<b>${gpu.temperature}°</b>` : gpu.node_state ? `STATE <b>${escapeHtml(gpu.node_state)}</b>` : "<b>—</b>";
+    const isMaint = gpu.status === "maintenance";
+    const isDown = gpu.substatus === "down";
+    const isBusyDrain = gpu.status === "busy" && (gpu.substatus === "drain" || gpu.substatus === "down" || gpu.substatus === "reserved");
+    const tileClass = isMaint ? (isDown ? "down" : "maintenance") : isBusyDrain ? "busy-drain" : "";
+    const dotClass = gpu.status === "idle" ? "idle" : isMaint ? (isDown ? "down" : "maintenance") : isBusyDrain ? "busy-drain" : "";
+    const utilDisplay = gpu.util_display ?? `${gpu.utilization}%`;
+    const barHtml = isMaint
+      ? `<span class="maint ${isDown ? "down" : ""}" style="width:100%"></span>`
+      : `<span class="${utilClass(gpu.utilization)}" style="width:${gpu.utilization}%"></span>`;
+    const tooltipParts = [`${gpu.node} / ${gpu.model}`];
+    if (gpu.node_state) tooltipParts.push(`节点状态: ${gpu.node_state}`);
+    if (gpu.node_reason) tooltipParts.push(`原因: ${gpu.node_reason}`);
+    return `<div class="gpu-tile ${tileClass}" title="${escapeHtml(tooltipParts.join(" · "))}">
+    <div class="tile-head"><span>${escapeHtml(gpu.id)}</span><i class="gpu-status ${dotClass}"></i></div>
+    <div class="gpu-util"><strong>${escapeHtml(utilDisplay)}</strong><span>${escapeHtml(gpu.util_label || "GPU UTIL")}</span></div>
+    <div class="util-bar">${barHtml}</div>
+    <div class="gpu-meta"><span>MEM <b>${memory}</b></span><span>${rightMeta}</span></div>
     <div class="gpu-process"><strong>${escapeHtml(gpu.process)}</strong>${gpu.owner ? ` · ${escapeHtml(gpu.owner)}` : ""}</div>
   </div>`;
   }).join("");
@@ -182,27 +287,33 @@ function renderStorage() {
     $("#usersList").innerHTML = `<div class="empty-state">未连接服务器，暂无主目录明细</div>`;
     return;
   }
-  const paths = state.data.storage.paths || [];
-  $("#storagePaths").innerHTML = paths.map((item) => {
-    const usedGb = item.used_gb ?? (item.used_tb * 1000);
-    const quotaGb = item.quota_gb ?? (item.quota_tb * 1000);
-    const pct = item.pct ?? Math.min((usedGb / Math.max(quotaGb, 1)) * 100, 100);
-    return `<div class="path-row" title="${escapeHtml(item.path)}"><span class="path-name">${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%"></span></div><span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span></div>`;
-  }).join("");
-
   const subdirs = state.data.storage.subdirs || [];
+  const paths = state.data.storage.paths || [];
+  if (!paths.length) {
+    const emptyMsg = state.data.storage.scanning ? "正在后台统计用户目录各文件夹占比…" : "主目录为空或暂无子目录数据";
+    $("#storagePaths").innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
+  } else {
+    $("#storagePaths").innerHTML = paths.map((item, idx) => {
+      const usedGb = item.used_gb ?? (item.used_tb * 1000);
+      const pct = Number(item.pct ?? 0);
+      const color = PIE_COLORS[idx % PIE_COLORS.length];
+      return `<div class="path-row" title="${escapeHtml(item.path)} (${pct}%)"><span class="path-name"><i class="path-dot" style="background:${color}"></i>${escapeHtml(item.path)}</span><div class="path-track"><span style="width:${Math.max(pct, usedGb > 0 ? 2 : 0)}%;background:${color}"></span></div><span class="path-value">${escapeHtml(formatSizeText(usedGb))}</span></div>`;
+    }).join("");
+  }
+
   if (!subdirs.length) {
     const msg = state.data.storage.scanning ? "正在后台统计主目录各文件夹大小…" : "主目录为空或暂无子目录明细";
     $("#usersList").innerHTML = `<div class="empty-state">${msg}</div>`;
     return;
   }
   $("#usersList").innerHTML = subdirs.map((item, index) => {
-    const icon = item.name.startsWith(".") ? "⚙" : item.name.startsWith("~") ? "📄" : "📁";
-    const sizeLabel = item.used_gb >= 1 ? `${item.used_gb.toFixed(2)} GB` : `${item.used_mb.toFixed(1)} MB`;
+    const icon = item.name.startsWith(".") ? "⚙" : item.name.startsWith("~") || item.name === "其他" ? "📄" : "📁";
+    const sizeLabel = formatSizeText(item.used_gb ?? (item.used_mb / 1000));
+    const color = PIE_COLORS[index % PIE_COLORS.length];
     return `<div class="user-row" title="${escapeHtml(item.name)} (${item.share_pct}%)">
       <span class="user-rank">${String(index + 1).padStart(2, "0")}</span>
       <span class="user-avatar">${icon}</span>
-      <span class="user-name">${escapeHtml(item.name)}<div class="user-bar"><span style="width:${Math.max(item.share_pct, 2)}%"></span></div></span>
+      <span class="user-name">${escapeHtml(item.name)}<div class="user-bar"><span style="width:${Math.max(item.share_pct, 2)}%;background:${color}"></span></div></span>
       <span class="user-amount">${escapeHtml(sizeLabel)}</span>
     </div>`;
   }).join("");
@@ -218,7 +329,13 @@ function renderJobs() {
     $("#jobsTable").innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted-2);padding:24px 8px;">当前无运行或排队中的任务</td></tr>`;
     return;
   }
-  $("#jobsTable").innerHTML = state.data.jobs.map((job) => `<tr><td>${escapeHtml(job.name)}<span class="job-id">${escapeHtml(job.id)}</span></td><td class="owner">${escapeHtml(job.owner)}</td><td>${escapeHtml(job.partition)}</td><td>${job.gpus}</td><td>${escapeHtml(job.elapsed)}</td><td><span class="status-pill ${job.status === "PENDING" ? "pending" : ""}">${escapeHtml(job.status)}</span></td></tr>`).join("");
+  $("#jobsTable").innerHTML = state.data.jobs.map((job) => {
+    const isPending = job.status === "PENDING";
+    const reasonText = isPending && job.reason ? (REASON_LABELS[job.reason] || job.reason) : "";
+    const statusLabel = reasonText ? `PENDING · ${reasonText}` : job.status;
+    const statusTitle = isPending && job.reason ? `排队原因: ${job.reason}` : job.node ? `运行节点: ${job.node}` : "";
+    return `<tr><td>${escapeHtml(job.name)}<span class="job-id">${escapeHtml(job.id)}</span></td><td class="owner">${escapeHtml(job.owner)}</td><td>${escapeHtml(job.partition)}</td><td>${job.gpus}</td><td>${escapeHtml(job.elapsed)}</td><td><span class="status-pill ${isPending ? "pending" : ""}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}</span></td></tr>`;
+  }).join("");
 }
 
 function renderSettingsDiag() {

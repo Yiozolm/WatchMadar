@@ -62,6 +62,8 @@ def _disconnected_payload(error: str = "") -> dict:
             "refresh_seconds": 10,
             "gpu_total": 0,
             "gpu_online": 0,
+            "gpu_maintenance": 0,
+            "gpu_idle": 0,
             "gpu_utilization": 0,
             "active_jobs": 0,
             "queued_jobs": 0,
@@ -123,7 +125,7 @@ def _number(value: str | None, default: int = 0) -> int:
 
 def _parse_kv_line(line: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for match in re.finditer(r"([A-Za-z][A-Za-z0-9]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9]*=|$)", line):
+    for match in re.finditer(r"([A-Za-z][A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)", line):
         fields[match.group(1)] = match.group(2).strip()
     return fields
 
@@ -160,6 +162,9 @@ def _parse_jobs(raw: str) -> list[dict]:
         if len(parts) < 8:
             continue
         job_id, name, owner, partition, gres, elapsed, status, node = parts[:8]
+        reason = parts[8].strip().strip("()") if len(parts) > 8 else ""
+        if reason.lower() in {"none", "null", "(null)"}:
+            reason = ""
         jobs.append({
             "id": job_id,
             "name": name,
@@ -169,8 +174,80 @@ def _parse_jobs(raw: str) -> list[dict]:
             "elapsed": elapsed,
             "status": status,
             "node": node if node != "(null)" else "",
+            "reason": reason,
         })
     return jobs
+
+
+_DOWN_STATES = {
+    "DOWN",
+    "FAIL",
+    "FAILING",
+    "INVAL",
+    "NOT_RESPONDING",
+    "POWER_DOWN",
+    "POWERED_DOWN",
+    "POWERING_DOWN",
+}
+_DRAIN_STATES = {
+    "DRAIN",
+    "DRAINED",
+    "DRAINING",
+    "MAINT",
+    "REBOOT_REQUESTED",
+    "REBOOT_ISSUED",
+}
+
+
+def _classify_node_state(state: str, reason: str) -> dict:
+    raw_state = (state or "").upper().strip()
+    tokens = {tok.rstrip("*~$#@!") for tok in raw_state.split("+") if tok}
+    reason_raw = (reason or "").strip()
+    if reason_raw.lower() in {"none", "(null)"}:
+        reason_raw = ""
+    reason_short = re.sub(r"\s*\[[^\]]*\]\s*$", "", reason_raw).strip()
+
+    if tokens & _DOWN_STATES or "*" in raw_state:
+        return {
+            "mode": "down",
+            "badge": "DOWN",
+            "label": "节点离线 (DOWN)",
+            "reason": reason_raw,
+            "reason_short": reason_short or "节点无响应或已下线",
+            "planned": False,
+        }
+    if tokens & _DRAIN_STATES:
+        if "MAINT" in tokens:
+            badge, label = "MAINT", "系统维护中 (MAINT)"
+        elif "REBOOT_REQUESTED" in tokens or "REBOOT_ISSUED" in tokens:
+            badge, label = "REBOOT", "等待重启维护"
+        else:
+            badge, label = "DRAIN", "维护排空中 (DRAIN)"
+        return {
+            "mode": "drain",
+            "badge": badge,
+            "label": label,
+            "reason": reason_raw,
+            "reason_short": reason_short or "暂停接收新任务",
+            "planned": False,
+        }
+    if "RESERVED" in tokens:
+        return {
+            "mode": "reserved",
+            "badge": "RESV",
+            "label": "节点预留 (RESERVED)",
+            "reason": reason_raw,
+            "reason_short": reason_short or "资源已预留",
+            "planned": False,
+        }
+    return {
+        "mode": "normal",
+        "badge": "PLANNED" if "PLANNED" in tokens else "",
+        "label": "",
+        "reason": reason_raw,
+        "reason_short": reason_short,
+        "planned": "PLANNED" in tokens,
+    }
 
 
 def _parse_nodes(raw: str, jobs: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -191,29 +268,69 @@ def _parse_nodes(raw: str, jobs: list[dict]) -> tuple[list[dict], list[dict]]:
         total = _gpu_count_from_tres(cfg_tres) or _gpu_count_from_gres(gres)
         allocated = _gpu_count_from_tres(fields.get("AllocTRES", ""))
         state = fields.get("State", "").upper()
+        reason = fields.get("Reason", "")
+        state_info = _classify_node_state(state, reason)
         node_jobs = jobs_by_node.get(node_name, [])
         allocated_jobs: list[dict] = []
         for job in node_jobs:
             allocated_jobs.extend([job] * max(job["gpus"], 1))
         model = _model_from_gres(gres)
-        nodes.append({"name": node_name, "model": model, "total": total, "allocated": allocated, "state": state})
+        nodes.append({
+            "name": node_name,
+            "model": model,
+            "total": total,
+            "allocated": allocated,
+            "state": state,
+            "mode": state_info["mode"],
+            "reason": state_info["reason_short"],
+            "reason_full": state_info["reason"],
+        })
         for index in range(total):
             job = allocated_jobs[index] if index < len(allocated_jobs) else None
             busy = index < allocated or job is not None
+            if busy:
+                status = "busy"
+                substatus = state_info["mode"]
+                utilization = 100
+                util_display = "100%"
+                util_label = f"ALLOC · {state_info['badge']}" if state_info["mode"] != "normal" else "ALLOC"
+                process = job["name"] if job else "Allocated by Slurm"
+                owner = job["owner"] if job else state_info["reason_short"]
+            elif state_info["mode"] in {"down", "drain", "reserved"}:
+                status = "maintenance"
+                substatus = state_info["mode"]
+                utilization = 0
+                util_display = state_info["badge"]
+                util_label = "OFFLINE" if state_info["mode"] == "down" else "不可调度"
+                process = state_info["label"]
+                owner = state_info["reason_short"]
+            else:
+                status = "idle"
+                substatus = "planned" if state_info["planned"] else "idle"
+                utilization = 0
+                util_display = "0%"
+                util_label = "ALLOC · PLANNED" if state_info["planned"] else "ALLOC"
+                process = "Available (已预排期)" if state_info["planned"] else "Available"
+                owner = ""
+
             gpus.append({
                 "id": f"{node_name} / GPU {index + 1:02d}",
                 "node": node_name,
                 "model": model,
-                "utilization": 100 if busy else 0,
-                "util_label": "ALLOC",
+                "utilization": utilization,
+                "util_display": util_display,
+                "util_label": util_label,
                 "memory_used": None,
                 "memory_total": None,
                 "temperature": None,
                 "power": None,
                 "power_limit": None,
-                "status": "busy" if busy else "idle",
-                "process": job["name"] if job else ("Allocated by Slurm" if busy else "Available"),
-                "owner": job["owner"] if job else "",
+                "status": status,
+                "substatus": substatus,
+                "node_state": state,
+                "node_reason": state_info["reason"] or state_info["reason_short"],
+                "process": process,
+                "owner": owner,
             })
     return nodes, gpus
 
@@ -252,24 +369,16 @@ _DU_CACHE: dict = {"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False}
 _DU_REFRESH_SECONDS = 1800  # 30 minutes
 
 
-def _build_user_paths(home_path: str, home_used_gb: float, home_used_tb: float, total_gb: float, quota_tb: float, subdirs: list[dict]) -> list[dict]:
-    paths = [
-        {
-            "path": f"主目录 ({home_path})",
-            "used_gb": home_used_gb,
-            "quota_gb": total_gb,
-            "used_tb": home_used_tb,
-            "quota_tb": quota_tb,
-            "pct": round(min(home_used_gb / max(total_gb, 1.0) * 100, 100), 1),
-            "kind": "home",
-        }
-    ]
-    for sub in subdirs[:3]:
+def _build_user_paths(home_used_gb: float, home_used_tb: float, subdirs: list[dict]) -> list[dict]:
+    paths = []
+    for sub in subdirs[:5]:
         paths.append({
-            "path": f"~/ {sub['name']}",
+            "path": sub["name"] if sub["name"] == "其他" else f"~/ {sub['name']}",
+            "name": sub["name"],
             "used_gb": sub["used_gb"],
-            "quota_gb": max(home_used_gb, 0.1),
-            "used_tb": round(sub["used_gb"] / 1000, 3),
+            "used_mb": sub["used_mb"],
+            "quota_gb": max(home_used_gb, 0.0001),
+            "used_tb": round(sub["used_gb"] / 1000, 6),
             "quota_tb": home_used_tb,
             "pct": sub["share_pct"],
             "kind": "subdir",
@@ -311,14 +420,26 @@ def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
     home_kb = sum(kb for _, kb in raw_subdirs)
 
     subdirs = []
-    for name, kb in raw_subdirs[:8]:
+    top_items = raw_subdirs[:5] if len(raw_subdirs) > 6 else raw_subdirs[:6]
+    rest_items = raw_subdirs[5:] if len(raw_subdirs) > 6 else []
+    for name, kb in top_items:
         used_bytes = kb * 1024
         share = round(kb / home_kb * 100, 1) if home_kb > 0 else 0.0
         subdirs.append({
             "name": name,
-            "used_gb": round(used_bytes / 1e9, 2),
-            "used_mb": round(used_bytes / 1e6, 1),
+            "used_gb": round(used_bytes / 1e9, 6),
+            "used_mb": round(used_bytes / 1e6, 2),
             "share_pct": min(share, 100.0),
+        })
+    if rest_items:
+        rest_kb = sum(kb for _, kb in rest_items)
+        rest_bytes = rest_kb * 1024
+        rest_share = round(rest_kb / home_kb * 100, 1) if home_kb > 0 else 0.0
+        subdirs.append({
+            "name": "其他",
+            "used_gb": round(rest_bytes / 1e9, 6),
+            "used_mb": round(rest_bytes / 1e6, 2),
+            "share_pct": min(rest_share, 100.0),
         })
 
     with _DU_LOCK:
@@ -341,17 +462,14 @@ def _sync_du_into_payload(payload: dict) -> None:
         subdirs = list(_DU_CACHE["subdirs"])
         scanning = _DU_CACHE["scanning"]
     home_used_bytes = home_kb * 1024
-    home_used_gb = round(home_used_bytes / 1e9, 2)
-    home_used_tb = round(home_used_bytes / 1e12, 3)
-    total_gb = max(storage.get("fs_total_gb", 1.0), 1.0)
-    quota_tb = storage.get("quota_tb", 0.0)
-    home_path = storage.get("home_path", "~")
+    home_used_gb = round(home_used_bytes / 1e9, 6)
+    home_used_tb = round(home_used_bytes / 1e12, 6)
     storage["scanning"] = scanning
     storage["home_used_gb"] = home_used_gb
     storage["home_used_tb"] = home_used_tb
     storage["used_tb"] = home_used_tb
     storage["subdirs"] = subdirs
-    storage["paths"] = _build_user_paths(home_path, home_used_gb, home_used_tb, total_gb, quota_tb, subdirs)
+    storage["paths"] = _build_user_paths(home_used_gb, home_used_tb, subdirs)
 
 
 def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
@@ -419,9 +537,9 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
         scanning = _DU_CACHE["scanning"]
 
     home_used_bytes = home_kb * 1024
-    home_used_gb = round(home_used_bytes / 1e9, 2)
-    home_used_tb = round(home_used_bytes / 1e12, 3)
-    paths = _build_user_paths(home_path, home_used_gb, home_used_tb, df_home["total_gb"], df_home["quota_tb"], subdirs)
+    home_used_gb = round(home_used_bytes / 1e9, 6)
+    home_used_tb = round(home_used_bytes / 1e12, 6)
+    paths = _build_user_paths(home_used_gb, home_used_tb, subdirs)
 
     return {
         "user": user,
@@ -446,7 +564,7 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
 
 def _collect_ssh_metrics(force_du: bool = False) -> dict:
     need_init_fs = not _INIT_FS_CACHE["initialized"]
-    probe_command = r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N" 2>/dev/null'''
+    probe_command = r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r" 2>/dev/null'''
     if need_init_fs:
         probe_command += r'''; printf '__MADAR_STORAGE__\n'; ''' + _STORAGE_INIT_COMMAND
 
@@ -474,6 +592,14 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     storage = _collect_storage(storage_raw, force_du=force_du)
     total_gpus = sum(node["total"] for node in nodes)
     allocated_gpus = sum(min(node["allocated"], node["total"]) for node in nodes)
+    maintenance_gpus = sum(1 for gpu in gpus if gpu["status"] == "maintenance")
+    idle_gpus = sum(1 for gpu in gpus if gpu["status"] == "idle")
+    online_gpus = max(total_gpus - maintenance_gpus, 0)
+    maintenance_nodes = [
+        {"name": node["name"], "state": node["state"], "reason": node["reason"]}
+        for node in nodes
+        if node["mode"] in {"down", "drain", "reserved"}
+    ]
     return {
         "cluster": {
             "name": "Madar HPC",
@@ -486,7 +612,10 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "refresh_seconds": 60,
             "gpu_total": total_gpus,
-            "gpu_online": total_gpus,
+            "gpu_online": online_gpus,
+            "gpu_maintenance": maintenance_gpus,
+            "gpu_idle": idle_gpus,
+            "maintenance_nodes": maintenance_nodes,
             "gpu_utilization": round(allocated_gpus / total_gpus * 100) if total_gpus else 0,
             "active_jobs": active_jobs,
             "queued_jobs": queued_jobs,

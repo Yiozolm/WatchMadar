@@ -48,23 +48,23 @@
 
         <div id="toast" class="toast" role="status"></div>
         <section class="stats-grid" id="overviewStats">
-          <article class="stat-card accent-green"><div class="stat-top"><span>GPU 在线</span><span class="stat-icon">⌁</span></div><div class="stat-value"><strong id="gpuOnline">—</strong><small>/ <span id="gpuTotal">—</span></small></div><div class="stat-foot"><span class="trend up" id="gpuFootStatus">等待数据</span><span>Slurm allocation</span></div></article>
+          <article class="stat-card accent-green"><div class="stat-top"><span>GPU 可用在线</span><span class="stat-icon">⌁</span></div><div class="stat-value"><strong id="gpuOnline">—</strong><small>/ <span id="gpuTotal">—</span></small></div><div class="stat-foot"><span class="trend up" id="gpuFootStatus">等待数据</span><span>Slurm allocation</span></div></article>
           <article class="stat-card accent-blue"><div class="stat-top"><span>平均利用率</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="gpuUtil">—</strong><small>%</small></div><div class="mini-chart" id="utilSpark"></div><div class="stat-foot"><span class="trend up" id="utilFootStatus">等待数据</span><span>cluster load</span></div></article>
           <article class="stat-card accent-purple"><div class="stat-top"><span>运行中任务</span><span class="stat-icon">▤</span></div><div class="stat-value"><strong id="activeJobs">—</strong><small> jobs</small></div><div class="stat-foot"><span class="trend neutral" id="queuedJobsFoot">— queued</span><span>gpu / interactive</span></div></article>
-          <article class="stat-card accent-orange"><div class="stat-top"><span>我的目录占用</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="storageUsed">—</strong><small id="storageUnit"> GB</small></div><div class="storage-track"><span id="storageTrack" style="width:0%"></span></div><div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">磁盘剩余 —</span></div></article>
+          <article class="stat-card accent-orange"><div class="stat-top"><span>我的目录占用</span><span class="stat-icon">◒</span></div><div class="stat-value"><strong id="storageUsed">—</strong><small id="storageUnit"> GB</small></div><div class="storage-track"><span id="storageTrack" style="width:0%"></span></div><div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">SSH 主目录</span></div></article>
         </section>
 
         <section class="content-grid">
           <article class="panel gpu-panel" id="gpuSection">
-            <div class="panel-head"><div><p class="eyebrow">COMPUTE / GPU POOL</p><h2>GPU 使用情况</h2></div><div class="panel-tools"><div class="segmented" id="gpuFilter"><button class="selected" data-filter="all">全部</button><button data-filter="busy">使用中</button><button data-filter="idle">空闲</button></div><button class="more-button" title="更多选项">···</button></div></div>
-            <div class="gpu-summary"><div class="legend"><span><i class="legend-dot green"></i>高占用 <b>≥ 70%</b></span><span><i class="legend-dot blue"></i>中占用 <b>30–69%</b></span><span><i class="legend-dot gray"></i>空闲 <b>&lt; 30%</b></span></div><span class="small-muted" id="metricNote">未连接</span></div>
+            <div class="panel-head"><div><p class="eyebrow">COMPUTE / GPU POOL</p><h2>GPU 使用情况</h2></div><div class="panel-tools"><div class="segmented" id="gpuFilter"><button class="selected" data-filter="all">全部</button><button data-filter="busy">使用中</button><button data-filter="idle">空闲</button><button data-filter="maintenance">维护/排空</button></div><button class="more-button" title="更多选项">···</button></div></div>
+            <div class="gpu-summary"><div class="legend"><span><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span><span><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span><span><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span></div><span class="small-muted" id="metricNote">未连接</span></div>
             <div class="gpu-grid" id="gpuGrid"></div>
             <div class="panel-foot"><span>显示 <b id="gpuShown">0</b> / <b id="gpuCount">0</b> 张 GPU</span><button class="text-button" data-view="gpu">查看全部节点 <span>→</span></button></div>
           </article>
 
           <article class="panel storage-panel" id="storageSection">
             <div class="panel-head"><div><p class="eyebrow">SSH USER / HOME STORAGE</p><h2>用户目录空间</h2></div><button class="more-button" title="更多选项">···</button></div>
-            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span id="storageDonutLabel">用户占比</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong><span id="storageTotal2">所在分区可用 —</span><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
+            <div class="storage-total"><div class="donut" id="storageDonut"><div><strong id="storageDonutValue">—</strong><span id="storageDonutLabel">目录构成</span></div></div><div class="storage-copy"><strong><span id="storageUsed2">—</span> <small id="storageUnit2">GB</small></strong><div class="storage-pie-legend" id="storageTotal2">等待扫描目录构成…</div><div class="storage-health" id="storageHealthState"><i></i>未连接</div></div></div>
             <div class="storage-paths" id="storagePaths"></div>
             <div class="panel-foot"><span id="storageHomeFoot">主目录 <b>—</b></span><button class="text-button" data-view="storage">查看子目录 <span>→</span></button></div>
           </article>
