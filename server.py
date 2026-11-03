@@ -21,14 +21,12 @@ import time
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parent
 HOST = os.environ.get("MADAR_DASHBOARD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MADAR_DASHBOARD_PORT", "8765"))
-DATA_FILE = os.environ.get("MADAR_DATA_FILE", "")
-SSH_ENABLED = os.environ.get("MADAR_SSH_ENABLED", "1").lower() not in {"0", "false", "no"}
 SSH_HOST = os.environ.get("MADAR_SSH_HOST", "madar")
 SSH_USER = os.environ.get("MADAR_SSH_USER", "")
 SSH_PORT = os.environ.get("MADAR_SSH_PORT", "")
@@ -50,12 +48,34 @@ def _find_ssh() -> str:
     return shutil.which("ssh") or "ssh"
 
 
-def _sample_payload(data_source: str = "demo", error: str = "") -> dict:
-    payload = json.loads((ROOT / "sample_metrics.json").read_text(encoding="utf-8"))
-    payload.setdefault("cluster", {})["data_source"] = data_source
-    if error:
-        payload["cluster"]["data_error"] = error
-    return payload
+def _disconnected_payload(error: str = "") -> dict:
+    return {
+        "cluster": {
+            "name": "Madar HPC",
+            "status": "disconnected",
+            "connected": False,
+            "data_source": "disconnected",
+            "data_error": error,
+            "uptime": "—",
+            "last_updated": None,
+            "refresh_seconds": 10,
+            "gpu_total": 0,
+            "gpu_online": 0,
+            "gpu_utilization": 0,
+            "active_jobs": 0,
+            "queued_jobs": 0,
+            "storage_used_tb": 0.0,
+            "storage_total_tb": 0.0,
+        },
+        "gpus": [],
+        "jobs": [],
+        "storage": {
+            "quota_tb": 0.0,
+            "used_tb": 0.0,
+            "paths": [],
+            "users": [],
+        },
+    }
 
 
 def _ssh_command(command: str) -> list[str]:
@@ -293,6 +313,7 @@ def _collect_ssh_metrics() -> dict:
         "cluster": {
             "name": "Madar HPC",
             "status": "healthy",
+            "connected": True,
             "data_source": "ssh",
             "metric_mode": "slurm_allocation",
             "metric_note": "GPU 占用来自 Slurm 分配；登录节点不允许直接读取计算节点 NVML。",
@@ -313,30 +334,47 @@ def _collect_ssh_metrics() -> dict:
     }
 
 
-def load_metrics() -> dict:
-    """Probe Madar over SSH, with explicit opt-outs and safe fallbacks."""
+def get_settings() -> dict:
+    return {
+        "ssh_host": SSH_HOST,
+        "ssh_user": SSH_USER,
+        "ssh_port": SSH_PORT,
+        "ssh_timeout": SSH_TIMEOUT,
+        "ssh_config": SSH_CONFIG,
+    }
+
+
+def update_settings(data: dict) -> dict:
+    global SSH_HOST, SSH_USER, SSH_PORT, SSH_TIMEOUT
+    with _CACHE_LOCK:
+        if "ssh_host" in data:
+            host = str(data["ssh_host"]).strip()
+            if host:
+                SSH_HOST = host
+        if "ssh_user" in data:
+            SSH_USER = str(data["ssh_user"]).strip()
+        if "ssh_port" in data:
+            SSH_PORT = str(data["ssh_port"]).strip()
+        if "ssh_timeout" in data:
+            try:
+                SSH_TIMEOUT = max(2.0, min(60.0, float(data["ssh_timeout"])))
+            except (TypeError, ValueError):
+                pass
+        _CACHE.update({"at": 0.0, "payload": None})
+    return get_settings()
+
+
+def load_metrics(force: bool = False) -> dict:
+    """Probe Madar over SSH and return disconnected state on failure."""
     now = time.monotonic()
     with _CACHE_LOCK:
-        if _CACHE["payload"] is not None and now - _CACHE["at"] < 8:
+        if not force and _CACHE["payload"] is not None and now - _CACHE["at"] < 8:
             return _CACHE["payload"]
         try:
-            if SSH_ENABLED:
-                payload = _collect_ssh_metrics()
-            elif DATA_FILE:
-                payload = json.loads(Path(DATA_FILE).read_text(encoding="utf-8"))
-                payload.setdefault("cluster", {})["data_source"] = "configured file"
-            else:
-                payload = _sample_payload()
+            payload = _collect_ssh_metrics()
         except (OSError, json.JSONDecodeError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            if DATA_FILE:
-                try:
-                    payload = json.loads(Path(DATA_FILE).read_text(encoding="utf-8"))
-                    payload.setdefault("cluster", {})["data_source"] = "configured file"
-                except (OSError, json.JSONDecodeError):
-                    payload = _sample_payload("fallback", str(exc))
-            else:
-                payload = _sample_payload("fallback", str(exc))
-            print(f"[madar-dashboard] SSH probe failed, using fallback: {exc}")
+            payload = _disconnected_payload(str(exc))
+            print(f"[madar-dashboard] SSH probe failed: {exc}")
         _CACHE.update({"at": time.monotonic(), "payload": payload})
         return payload
 
@@ -361,9 +399,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
     def do_GET(self):  # noqa: N802 - stdlib API name
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/api/metrics":
-            payload = json.dumps(load_metrics(), ensure_ascii=False).encode("utf-8")
+            query = parse_qs(parsed.query)
+            force = query.get("force", ["0"])[0] == "1"
+            payload = json.dumps(load_metrics(force=force), ensure_ascii=False).encode("utf-8")
+            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            return
+
+        if path == "/api/settings":
+            payload = json.dumps(get_settings(), ensure_ascii=False).encode("utf-8")
             self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
             return
 
@@ -375,6 +421,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             super().do_GET()
         except _DISCONNECT_ERRORS:
             return
+
+    def do_POST(self):  # noqa: N802 - stdlib API name
+        path = urlparse(self.path).path
+        if path == "/api/settings":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                body = json.loads(raw.decode("utf-8"))
+            except (ValueError, json.JSONDecodeError):
+                body = {}
+            updated = update_settings(body)
+            payload = json.dumps(updated, ensure_ascii=False).encode("utf-8")
+            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            return
+        self.send_error(404)
 
     def handle(self):
         try:
@@ -397,7 +458,7 @@ if __name__ == "__main__":
     mimetypes.add_type("application/javascript", ".js")
     server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
     print(f"Madar dashboard running at http://{HOST}:{PORT}")
-    print(f"SSH probe: {'enabled' if SSH_ENABLED else 'disabled'} · host={SSH_HOST}")
+    print(f"SSH probe host={SSH_HOST}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
