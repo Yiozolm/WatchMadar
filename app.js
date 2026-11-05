@@ -4,6 +4,12 @@ const state = {
   selectedNode: "all",
   jobFilter: "all",
   jobSearch: "",
+  ladderFilter: "all",
+  ladderMode: "groups",
+  acctFilter: "active",
+  simFairsharePts: null,
+  simAgeHours: 0,
+  simSelectedAcct: "",
   refreshMs: 60000,
   timer: null,
   activeView: "overview",
@@ -52,7 +58,13 @@ const VIEW_META = {
     title: "任务队列",
     eyebrow: "SCHEDULER / SLURM QUEUE",
     headingHtml: () => `Slurm 任务队列`,
-    subtitle: "实时追踪集群运行中与排队中的 GPU 及交互式计算任务。",
+    subtitle: "实时追踪集群运行中与排队中的 GPU 及交互式计算任务，并查看各作业的优先级构成。",
+  },
+  priority: {
+    title: "优先级规则",
+    eyebrow: "SLURM MULTIFACTOR / PRIORITY & FAIRSHARE",
+    headingHtml: () => `调度优先级规则与排队透视`,
+    subtitle: "可视化解析远端 HPC 的多因子优先级公式 (FairShare + Partition + Age)、个人账户对比及实时排队阶梯。",
   },
   settings: {
     title: "采集设置",
@@ -108,6 +120,7 @@ const DISCONNECTED_DATA = {
   gpus: [],
   jobs: [],
   storage: { quota_tb: 0, used_tb: 0, paths: [], subdirs: [], users: [] },
+  priority: { config: {}, summary: {}, user_accounts: [], accounts: [], queue_groups: [] },
 };
 
 const PIE_COLORS = ["#ffb46a", "#5fa9ff", "#ab88ff", "#38d6a1", "#f472b6", "#38bdf8"];
@@ -243,6 +256,7 @@ function renderStatsAndOverview() {
     $("#gpuUtil").textContent = "—";
     $("#activeJobs").textContent = "—";
     $("#jobNavCount").textContent = "—";
+    $("#priorityNavBadge").textContent = "—";
     $("#queuedJobsFoot").textContent = "— queued";
     $("#gpuFootStatus").textContent = "未连接";
     $("#gpuFootStatus").className = "trend up";
@@ -397,8 +411,20 @@ function renderStatsAndOverview() {
 
   const allJobs = state.data.jobs || [];
   const myJobsCount = allJobs.filter((j) => j.owner === sshUser).length;
-  $("#ovQueueSummary").textContent = `${cluster.active_jobs} 运行 / ${cluster.queued_jobs} 排队`;
-  $("#ovQueueSub").textContent = `当前用户任务: ${myJobsCount} 个`;
+  const prioSummary = state.data.priority?.summary || {};
+  const myPrio = prioSummary.my_current_priority || 0;
+  const myRank = prioSummary.my_eligible_rank;
+  $("#priorityNavBadge").textContent = myPrio ? `${myPrio}` : "—";
+  if (myPrio && myRank) {
+    $("#ovQueueSummary").textContent = `优先级 ${myPrio} · 排队顺位 #${myRank}`;
+    $("#ovQueueSub").textContent = `前序 ${prioSummary.my_gpus_ahead || 0} 卡 · 我的任务 ${myJobsCount} 个 (点击透视)`;
+  } else if (myPrio) {
+    $("#ovQueueSummary").textContent = `${cluster.active_jobs} 运行 / ${cluster.queued_jobs} 排队`;
+    $("#ovQueueSub").textContent = `我的优先级 ${myPrio} · 任务 ${myJobsCount} 个 (点击透视)`;
+  } else {
+    $("#ovQueueSummary").textContent = `${cluster.active_jobs} 运行 / ${cluster.queued_jobs} 排队`;
+    $("#ovQueueSub").textContent = `当前用户任务: ${myJobsCount} 个`;
+  }
 
   // Overview Storage Panel (整体情况)
   const homeUsedGb = storage.home_used_gb ?? storage.used_tb * 1000;
@@ -707,19 +733,42 @@ function renderStoragePage() {
     .join("");
 }
 
-function renderJobRowHtml(job) {
+function renderJobRowHtml(job, sshUser = "") {
   const isPending = job.status === "PENDING";
+  const isMine = sshUser && job.owner === sshUser;
   const reasonText = isPending && job.reason ? REASON_LABELS[job.reason] || job.reason : "";
   const statusLabel = reasonText ? `PENDING · ${reasonText}` : job.status;
   const statusTitle = isPending && job.reason ? `排队原因: ${job.reason}` : job.node ? `运行节点: ${job.node}` : "";
   const nodeCell = job.node ? escapeHtml(job.node) : `<span style="color:var(--muted-2)">—</span>`;
+  const acctHtml = job.account ? `<span class="acct-tag">${escapeHtml(job.account)}</span>` : "";
+  const mineHtml = isMine ? `<span class="mine-pill" style="margin-left:5px">我</span>` : "";
+
+  const prio = Number(job.priority) || 0;
+  const bd = job.prio_breakdown || { fairshare: 0, partition: 0, age: 0 };
+  const cap = 4500;
+  const fsPct = Math.min((bd.fairshare / cap) * 100, 100);
+  const partPct = Math.min((bd.partition / cap) * 100, 100 - fsPct);
+  const agePct = Math.min((bd.age / cap) * 100, Math.max(100 - fsPct - partPct, 0));
+  const prioTooltip = `总优先级 ${prio} = 公平份额(FairShare) ${bd.fairshare} + 分区(Partition) ${bd.partition} + 排队时长(Age) ${bd.age}`;
+  const timeText = job.time_limit ? `${escapeHtml(job.elapsed)} / <span style="color:var(--muted-2)">${escapeHtml(job.time_limit)}</span>` : escapeHtml(job.elapsed);
+
   return `<tr>
     <td>${escapeHtml(job.name)}<span class="job-id">${escapeHtml(job.id)}</span></td>
-    <td class="owner">${escapeHtml(job.owner)}</td>
+    <td class="owner">${escapeHtml(job.owner)}${acctHtml}${mineHtml}</td>
     <td>${escapeHtml(job.partition)}</td>
     <td>${nodeCell}</td>
     <td>${job.gpus}</td>
-    <td>${escapeHtml(job.elapsed)}</td>
+    <td title="${escapeHtml(prioTooltip)}">
+      <div class="prio-cell-wrap">
+        <div class="prio-cell-top"><strong>${prio}</strong><small>${bd.fairshare}+${bd.partition}+${bd.age}</small></div>
+        <div class="prio-mini-track">
+          <span class="ladder-seg fs" style="width:${fsPct.toFixed(1)}%"></span>
+          <span class="ladder-seg part" style="width:${partPct.toFixed(1)}%"></span>
+          <span class="ladder-seg age" style="width:${agePct.toFixed(1)}%"></span>
+        </div>
+      </div>
+    </td>
+    <td>${timeText}</td>
     <td><span class="status-pill ${isPending ? "pending" : ""}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}</span></td>
   </tr>`;
 }
@@ -735,7 +784,7 @@ function renderJobsPage() {
     $("#jobPageMine").textContent = "—";
     $("#jobsShownCount").textContent = "0";
     $("#jobsTotalCount").textContent = "0";
-    $("#jobsTable").innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted-2);padding:24px 8px;">未连接服务器，暂无任务队列数据</td></tr>`;
+    $("#jobsTable").innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted-2);padding:24px 8px;">未连接服务器，暂无任务队列数据</td></tr>`;
     return;
   }
 
@@ -758,7 +807,7 @@ function renderJobsPage() {
     if (state.jobFilter === "PENDING" && job.status === "RUNNING") return false;
     if (state.jobFilter === "mine" && job.owner !== sshUser) return false;
     if (keyword) {
-      const hay = `${job.id} ${job.name} ${job.owner} ${job.partition} ${job.node || ""} ${job.reason || ""}`.toLowerCase();
+      const hay = `${job.id} ${job.name} ${job.owner} ${job.account || ""} ${job.partition} ${job.node || ""} ${job.reason || ""}`.toLowerCase();
       if (!hay.includes(keyword)) return false;
     }
     return true;
@@ -768,10 +817,327 @@ function renderJobsPage() {
   $("#jobsTotalCount").textContent = jobs.length;
 
   if (!filtered.length) {
-    $("#jobsTable").innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted-2);padding:24px 8px;">无符合筛选条件的任务</td></tr>`;
+    $("#jobsTable").innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted-2);padding:24px 8px;">无符合筛选条件的任务</td></tr>`;
     return;
   }
-  $("#jobsTable").innerHTML = filtered.map((job) => renderJobRowHtml(job)).join("");
+  $("#jobsTable").innerHTML = filtered.map((job) => renderJobRowHtml(job, sshUser)).join("");
+}
+
+function updatePrioritySimulator() {
+  const prioData = state.data?.priority;
+  const isLive = Boolean(state.data?.cluster?.connected && prioData?.config?.weights);
+  if (!isLive) {
+    $("#simResultTotal").textContent = "预计总分: —";
+    $("#simRankResult").textContent = "—";
+    $("#simAheadGpusResult").textContent = "—";
+    $("#simOvertakeResult").textContent = "—";
+    return;
+  }
+
+  const cfg = prioData.config;
+  const wPart = cfg.weights?.partition ?? 1000;
+  const wAge = cfg.weights?.age ?? 1000;
+  const maxAgeHours = cfg.max_age_hours || 168;
+  const ratePerHour = cfg.age_points_per_hour || 5.95;
+
+  const fsSlider = $("#simFsSlider");
+  const ageSlider = $("#simAgeSlider");
+  const fsPts = Number(fsSlider?.value ?? state.simFairsharePts ?? 1028);
+  const ageHours = Number(ageSlider?.value ?? state.simAgeHours ?? 0);
+  state.simFairsharePts = fsPts;
+  state.simAgeHours = ageHours;
+
+  const agePts = Math.round((ageHours / maxAgeHours) * wAge);
+  const totalSimPrio = fsPts + wPart + agePts;
+
+  $("#simFsValLabel").textContent = `${fsPts.toLocaleString()} 分 (占比 ${((fsPts / 3125) * 100).toFixed(1)}%)`;
+  $("#simAgeValLabel").textContent = `${ageHours} 小时 (+${agePts} 分)`;
+  $("#simResultTotal").textContent = `预计总分: ${totalSimPrio} pts (${fsPts} + ${wPart} + ${agePts})`;
+
+  const eligibleGroups = (prioData.queue_groups || []).filter((g) => g.eligible && !g.is_mine);
+  const groupsAhead = eligibleGroups.filter((g) => g.priority > totalSimPrio);
+  const simRank = groupsAhead.length + 1;
+  const totalCompetitors = eligibleGroups.length + 1;
+  const gpusAhead = groupsAhead.reduce((acc, g) => acc + (g.total_gpus || 0), 0);
+  const jobsAhead = groupsAhead.reduce((acc, g) => acc + (g.job_count || 0), 0);
+
+  $("#simRankResult").textContent = `第 ${simRank} 位 / 共 ${totalCompetitors} 批`;
+  $("#simRankSub").textContent = simRank === 1 ? "直接位居全集群可调度榜首！" : `排在 ${groupsAhead.length} 个他人的可调度批次之后`;
+
+  $("#simAheadGpusResult").textContent = `${gpusAhead} 张 GPU`;
+  $("#simAheadSub").textContent = gpusAhead === 0 ? "无更高优任务阻挡，有空闲卡即刻运行" : `前序共 ${jobsAhead} 个高优任务等待分配`;
+
+  if (groupsAhead.length === 0) {
+    $("#simOvertakeResult").textContent = "已达榜首 #1";
+    $("#simOvertakeSub").textContent = "无需额外排队追赶";
+  } else {
+    const nextGroup = groupsAhead[groupsAhead.length - 1];
+    const diff = nextGroup.priority - totalSimPrio + 1;
+    const hoursNeeded = Math.ceil(diff / ratePerHour);
+    const maxRemainingAgePts = wAge - agePts;
+    if (diff <= maxRemainingAgePts) {
+      $("#simOvertakeResult").textContent = `约 ${hoursNeeded} 小时 (+${diff}分)`;
+      $("#simOvertakeSub").textContent = `超越前一名 ${nextGroup.account} (${nextGroup.priority}分)`;
+    } else {
+      $("#simOvertakeResult").textContent = `需切换高份额账户`;
+      $("#simOvertakeSub").textContent = `差 ${diff} 分，仅靠 7 天排队(+${maxRemainingAgePts}分)无法反超`;
+    }
+  }
+}
+
+function renderPriorityPage() {
+  const { cluster, storage, jobs = [], priority } = state.data;
+  const isLive = Boolean(cluster.connected && cluster.data_source === "ssh" && priority?.config);
+  if (!isLive) {
+    $("#prioCardMine").textContent = "—";
+    $("#prioCardMineBreakdown").textContent = "未连接";
+    $("#prioCardMineAcct").textContent = "未连接";
+    $("#prioCardRank").textContent = "—";
+    $("#prioCardRankSub").textContent = "";
+    $("#prioCardAheadGpus").textContent = "未连接";
+    $("#prioCardMinePending").textContent = "未连接";
+    $("#myAccountsList").innerHTML = `<div class="empty-state">未连接服务器，暂无关联账户 FairShare 数据</div>`;
+    $("#prioLadderList").innerHTML = `<div class="empty-state">未连接服务器，暂无排队阶梯数据</div>`;
+    $("#prioAccountsTable").innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted-2);padding:24px 8px;">未连接服务器，暂无课题组份额数据</td></tr>`;
+    updatePrioritySimulator();
+    return;
+  }
+
+  const sshUser = storage?.user || "user";
+  const cfg = priority.config || {};
+  const summary = priority.summary || {};
+  const userAccounts = priority.user_accounts || [];
+  const queueGroups = priority.queue_groups || [];
+  const accountsList = priority.accounts || [];
+
+  $("#prioSimUserTag").textContent = `SSH 用户: ${sshUser}`;
+  $("#prioPluginBadge").textContent = cfg.priority_type || "priority/multifactor";
+  $("#prioCardFsWeight").textContent = (cfg.weights?.fairshare ?? 50000).toLocaleString();
+  $("#prioCardFsMax").textContent = `/ ku 上限 ${cfg.ku_max_fairshare_points ?? 3125} 分`;
+  $("#prioCardHalfLife").textContent = `半衰期 ${cfg.decay_half_life_days ?? 7} 天指数衰减`;
+  $("#prioCardAgeRate").textContent = `+${cfg.age_points_per_hour ?? 5.95}`;
+  $("#prioCardAgeCap").textContent = `${cfg.max_age_days ?? 7} 天满额 ${cfg.weights?.age ?? 1000} 分`;
+  $("#prioCardSchedMode").textContent = cfg.scheduler_type || "sched/backfill";
+
+  const myTopGroup = queueGroups.find((g) => g.is_mine);
+  const myCurrentPrio = summary.my_current_priority || 0;
+  const myCurrentAcct = summary.my_current_account || "—";
+  const myBestAcct = summary.my_best_account || "";
+  const myBestPrio = summary.my_best_base_priority || 0;
+
+  $("#prioCardMine").textContent = myCurrentPrio ? `${myCurrentPrio}` : "—";
+  if (myTopGroup) {
+    const bd = myTopGroup.prio_breakdown || {};
+    $("#prioCardMineBreakdown").textContent = `份额 ${bd.fairshare} + 分区 ${bd.partition} + 等待 ${bd.age}`;
+    $("#prioCardMineAcct").textContent =
+      myBestAcct && myBestAcct !== myCurrentAcct
+        ? `当前 ${myCurrentAcct} (${myBestAcct} 可达 ${myBestPrio}分)`
+        : `当前账户: ${myCurrentAcct}`;
+  } else {
+    $("#prioCardMineBreakdown").textContent = `新任务初始分 (FairShare + Partition)`;
+    $("#prioCardMineAcct").textContent = `账户: ${myCurrentAcct}`;
+  }
+
+  if (summary.my_eligible_rank) {
+    $("#prioCardRank").textContent = `#${summary.my_eligible_rank}`;
+    $("#prioCardRankSub").textContent = `/ ${summary.eligible_groups_count} 批可调度队列`;
+    $("#prioCardAheadGpus").textContent = `前序 ${summary.my_jobs_ahead} 任务 (需 ${summary.my_gpus_ahead} 张 GPU)`;
+    $("#prioCardMinePending").textContent = `我的排队: ${summary.my_pending_jobs} 任务 (${summary.my_pending_gpus} 卡)`;
+  } else {
+    $("#prioCardRank").textContent = "无排队";
+    $("#prioCardRankSub").textContent = `共 ${summary.eligible_groups_count} 批竞争中`;
+    $("#prioCardAheadGpus").textContent = `全队列待分配 ${summary.eligible_gpus_total || 0} 张 GPU`;
+    $("#prioCardMinePending").textContent = `可随时提交新任务`;
+  }
+
+  // Initialize simulator default to user's active account FairShare once
+  if (state.simFairsharePts === null) {
+    const defaultAcct = userAccounts.find((a) => a.account === myCurrentAcct) || userAccounts[0];
+    state.simFairsharePts = defaultAcct ? defaultAcct.fairshare_points : 1028;
+    state.simSelectedAcct = defaultAcct ? defaultAcct.account : "";
+    const myAgePts = myTopGroup?.prio_breakdown?.age || 0;
+    state.simAgeHours = Math.min(Math.round(myAgePts / (cfg.age_points_per_hour || 5.95)), 168);
+    if ($("#simFsSlider")) $("#simFsSlider").value = state.simFairsharePts;
+    if ($("#simAgeSlider")) $("#simAgeSlider").value = state.simAgeHours;
+  }
+
+  // Render user's Slurm accounts comparison
+  if (!userAccounts.length) {
+    $("#myAccountsList").innerHTML = `<div class="empty-state">未查询到个人关联账户明细</div>`;
+  } else {
+    const maxUserBase = Math.max(...userAccounts.map((a) => a.base_priority), 1);
+    $("#myAccountsList").innerHTML = userAccounts
+      .map((acct) => {
+        const isBest = userAccounts.length > 1 && acct.base_priority === maxUserBase;
+        const isSimSelected = state.simSelectedAcct === acct.account;
+        const badgeHtml = isBest
+          ? `<span class="node-badge online">推荐高优账户</span>`
+          : acct.my_pending_jobs > 0
+            ? `<span class="node-badge maint">当前排队中 (${acct.my_pending_jobs})</span>`
+            : `<span class="node-badge idle">可用账户</span>`;
+        const fsRatioPct = Math.min((acct.fairshare_points / 3125) * 100, 100).toFixed(1);
+        return `<div class="my-acct-card ${isBest ? "best" : ""} ${isSimSelected ? "active-sim" : ""}" data-sim-acct="${escapeHtml(acct.account)}" data-sim-fs="${acct.fairshare_points}" title="点击将 ${escapeHtml(acct.account)} 的公平份额 (${acct.fairshare_points}分) 带入下方推演器">
+          <div class="my-acct-top">
+            <div class="my-acct-name"><span>-A ${escapeHtml(acct.account)}</span></div>
+            ${badgeHtml}
+          </div>
+          <div class="my-acct-score">
+            <strong>${acct.base_priority} <small style="font-size:11px;font-weight:400;color:var(--muted)">初始总分</small></strong>
+            <span>FairShare <b>${acct.fairshare_points}</b> / 3125 (${fsRatioPct}%)</span>
+          </div>
+          <div class="util-bar"><span style="width:${Math.max(Number(fsRatioPct), 3)}%;background:${isBest ? "var(--green)" : "var(--purple)"}"></span></div>
+          <div class="my-acct-meta">
+            <div><span>课题组总消耗 (7天衰减):</span><b>${acct.account_raw_usage_hours.toLocaleString()} 核时</b></div>
+            <div><span>我个人消耗 / 有效占比:</span><b>${acct.raw_usage_hours.toLocaleString()} 核时 / ${(acct.effectv_usage * 100).toFixed(2)}%</b></div>
+            <div><span>我的在跑 / 排队任务:</span><b>${acct.my_running_jobs} 运行 / ${acct.my_pending_jobs} 排队</b></div>
+          </div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  updatePrioritySimulator();
+
+  // Render Live Pending Queue Priority Ladder
+  const maxScalePrio = Math.max(summary.highest_pending_priority || 4125, 4200);
+  let ladderItems = [];
+  if (state.ladderMode === "groups") {
+    ladderItems = queueGroups.filter((g) => {
+      if (state.ladderFilter === "eligible") return g.eligible;
+      if (state.ladderFilter === "mine") return g.is_mine;
+      return true;
+    });
+  } else {
+    const pendingIndiv = jobs
+      .filter((j) => j.status !== "RUNNING")
+      .sort((a, b) => b.priority - a.priority || (a.eligible === b.eligible ? 0 : a.eligible ? -1 : 1));
+    let rk = 0;
+    let gAhead = 0;
+    ladderItems = pendingIndiv
+      .map((j) => {
+        const item = {
+          owner: j.owner,
+          account: j.account,
+          partition: j.partition,
+          priority: j.priority,
+          reason: j.reason,
+          eligible: j.eligible,
+          is_mine: j.owner === sshUser,
+          job_count: 1,
+          total_gpus: j.gpus,
+          sample_job_id: j.id,
+          sample_job_name: j.name,
+          time_limit: j.time_limit,
+          prio_breakdown: j.prio_breakdown,
+          gpus_ahead: gAhead,
+          eligible_rank: j.eligible ? ++rk : null,
+        };
+        if (j.eligible) gAhead += j.gpus;
+        return item;
+      })
+      .filter((item) => {
+        if (state.ladderFilter === "eligible") return item.eligible;
+        if (state.ladderFilter === "mine") return item.is_mine;
+        return true;
+      });
+  }
+
+  $("#prioLadderSummaryNote").textContent = `共 ${summary.eligible_jobs_count || 0} 个可立即调度任务 (${summary.eligible_gpus_total || 0} 张 GPU) · 按总优先级降序排列`;
+
+  if (!ladderItems.length) {
+    $("#prioLadderList").innerHTML = `<div class="empty-state">当前筛选条件下没有排队中的任务</div>`;
+  } else {
+    $("#prioLadderList").innerHTML = ladderItems
+      .map((item) => {
+        const bd = item.prio_breakdown || { fairshare: 0, partition: 0, age: 0 };
+        const fsW = Math.min((bd.fairshare / maxScalePrio) * 100, 100);
+        const partW = Math.min((bd.partition / maxScalePrio) * 100, Math.max(100 - fsW, 0));
+        const ageW = Math.min((bd.age / maxScalePrio) * 100, Math.max(100 - fsW - partW, 0));
+        const reasonCn = REASON_LABELS[item.reason] || item.reason || "等待调度";
+        const rankHtml = item.eligible
+          ? `<div class="ladder-rank"><strong>#${item.eligible_rank}</strong><small>前序 ${item.gpus_ahead} 卡</small></div>`
+          : `<div class="ladder-rank"><strong>暂缓阻塞</strong><small>${escapeHtml(reasonCn)}</small></div>`;
+        const mineTag = item.is_mine ? `<span class="mine-pill">我的任务</span>` : "";
+        const batchDesc =
+          item.job_count > 1
+            ? `共 <b>${item.job_count}</b> 个任务 · 需 <b>${item.total_gpus}</b> 张 GPU · 代表作业 <b>${escapeHtml(item.sample_job_name)}</b> (${escapeHtml(item.sample_job_id)})`
+            : `申请 <b>${item.total_gpus}</b> 张 GPU · 作业 <b>${escapeHtml(item.sample_job_name)}</b> (${escapeHtml(item.sample_job_id)})${item.time_limit ? ` · 时限 ${escapeHtml(item.time_limit)}` : ""}`;
+        const approxWaitHours = (bd.age / (cfg.age_points_per_hour || 5.95)).toFixed(1);
+
+        return `<div class="ladder-row ${item.is_mine ? "mine" : ""} ${item.eligible ? "" : "blocked"}">
+          ${rankHtml}
+          <div class="ladder-info">
+            <div class="ladder-info-top">
+              <span>${escapeHtml(item.owner)}</span>
+              <span class="acct-tag">${escapeHtml(item.account || "—")}</span>
+              ${mineTag}
+            </div>
+            <div class="ladder-info-sub">${batchDesc}</div>
+          </div>
+          <div class="ladder-bar-wrap">
+            <div class="ladder-stack-track" title="总分 ${item.priority} = FairShare ${bd.fairshare} + Partition ${bd.partition} + Age ${bd.age}">
+              <span class="ladder-seg fs" style="width:${fsW.toFixed(2)}%"></span>
+              <span class="ladder-seg part" style="width:${partW.toFixed(2)}%"></span>
+              <span class="ladder-seg age" style="width:${ageW.toFixed(2)}%"></span>
+            </div>
+            <div class="ladder-bar-labels">
+              <span>公平份额(FairShare): <b>${bd.fairshare}</b> (${((bd.fairshare_norm || 0) * 100).toFixed(2)}%)</span>
+              <span>分区(Part): <b>${bd.partition}</b></span>
+              <span>排队加成(Age): <b>+${bd.age}</b> (~${approxWaitHours}h)</span>
+            </div>
+          </div>
+          <div class="ladder-right">
+            <div class="ladder-prio-num">${item.priority}<small>pts</small></div>
+            <span class="status-pill ${item.eligible ? "" : "pending"}">${escapeHtml(item.eligible ? `可调度 · ${reasonCn}` : `阻塞 · ${reasonCn}`)}</span>
+          </div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  // Render Account FairShare Leaderboard Table
+  const filteredAccts = accountsList.filter((a) => {
+    if (state.acctFilter === "active") return a.is_active || a.is_mine;
+    return true;
+  });
+
+  if (!filteredAccts.length) {
+    $("#prioAccountsTable").innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted-2);padding:24px 8px;">暂无匹配的课题组账户数据</td></tr>`;
+    return;
+  }
+
+  $("#prioAccountsTable").innerHTML = filteredAccts
+    .map((acct, idx) => {
+      const fsPct = Math.min((acct.fairshare_points / 3125) * 100, 100);
+      const barColor = fsPct >= 70 ? "var(--green)" : fsPct >= 30 ? "var(--purple)" : "var(--orange)";
+      const minePill = acct.is_mine ? `<span class="mine-pill" style="margin-left:6px">我的账户</span>` : "";
+      const shareTag = acct.raw_shares === "parent" ? `<span class="acct-tag">parent特权</span>` : "";
+      const gpuLoadHtml =
+        acct.running_gpus > 0 || acct.pending_gpus > 0
+          ? `<span style="color:var(--green)">${acct.running_gpus} 卡运行</span> · <span style="color:var(--orange)">${acct.pending_gpus} 卡排队</span>`
+          : `<span style="color:var(--muted-2)">当前空闲</span>`;
+
+      return `<tr style="${acct.is_mine ? "background:rgba(56,214,161,.05)" : ""}">
+        <td><b>#${idx + 1}</b></td>
+        <td><b>${escapeHtml(acct.account)}</b>${minePill}${shareTag}</td>
+        <td>
+          <div class="prio-cell-wrap" style="min-width:165px">
+            <div class="prio-cell-top">
+              <strong>${acct.fairshare_points} <span style="font-weight:400;color:var(--muted)">/ 3125 分</span></strong>
+              <small>因子 ${acct.fairshare.toFixed(5)}</small>
+            </div>
+            <div class="prio-mini-track">
+              <span class="ladder-seg" style="width:${Math.max(fsPct, acct.fairshare_points > 0 ? 2 : 0).toFixed(1)}%;background:${barColor}"></span>
+            </div>
+          </div>
+        </td>
+        <td><strong style="font-family:'Space Grotesk',sans-serif;color:var(--text)">${acct.base_priority} pts</strong></td>
+        <td>${acct.raw_usage_hours.toLocaleString()} 核时</td>
+        <td>${(acct.effectv_usage * 100).toFixed(2)}%</td>
+        <td>${gpuLoadHtml}</td>
+      </tr>`;
+    })
+    .join("");
 }
 
 function renderSettingsDiag() {
@@ -797,6 +1163,7 @@ function render() {
   renderGpusPage();
   renderStoragePage();
   renderJobsPage();
+  renderPriorityPage();
   renderSettingsDiag();
 }
 
@@ -926,11 +1293,60 @@ function bindEvents() {
       return;
     }
 
+    const simAcctCard = event.target.closest("[data-sim-acct]");
+    if (simAcctCard) {
+      const acctName = simAcctCard.dataset.simAcct;
+      const fsPts = Number(simAcctCard.dataset.simFs) || 0;
+      state.simSelectedAcct = acctName;
+      state.simFairsharePts = fsPts;
+      if ($("#simFsSlider")) $("#simFsSlider").value = fsPts;
+      renderPriorityPage();
+      showToastMessage(`已加载账户 ${acctName} 的公平份额 (${fsPts} 分)`);
+      return;
+    }
+
     const viewBtn = event.target.closest("[data-view]");
     if (viewBtn) {
       setView(viewBtn.dataset.view);
     }
   });
+
+  $("#simFsSlider")?.addEventListener("input", () => {
+    state.simSelectedAcct = "";
+    $$(".my-acct-card").forEach((el) => el.classList.remove("active-sim"));
+    updatePrioritySimulator();
+  });
+
+  $("#simAgeSlider")?.addEventListener("input", () => {
+    updatePrioritySimulator();
+  });
+
+  $$("#prioLadderFilter button").forEach((button) =>
+    button.addEventListener("click", () => {
+      $$("#prioLadderFilter button").forEach((item) => item.classList.remove("selected"));
+      button.classList.add("selected");
+      state.ladderFilter = button.dataset.ladderFilter;
+      renderPriorityPage();
+    })
+  );
+
+  $$("#prioLadderMode button").forEach((button) =>
+    button.addEventListener("click", () => {
+      $$("#prioLadderMode button").forEach((item) => item.classList.remove("selected"));
+      button.classList.add("selected");
+      state.ladderMode = button.dataset.ladderMode;
+      renderPriorityPage();
+    })
+  );
+
+  $$("#prioAccountFilter button").forEach((button) =>
+    button.addEventListener("click", () => {
+      $$("#prioAccountFilter button").forEach((item) => item.classList.remove("selected"));
+      button.classList.add("selected");
+      state.acctFilter = button.dataset.acctFilter;
+      renderPriorityPage();
+    })
+  );
 
   $("#clearNodeFilterBtn")?.addEventListener("click", () => {
     state.selectedNode = "all";

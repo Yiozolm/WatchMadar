@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="shortcut icon" type="image/png" href="logo.png" />
     <link rel="apple-touch-icon" href="logo.png" />
-    <link rel="stylesheet" href="styles.css?v=7" />
+    <link rel="stylesheet" href="styles.css?v=8" />
   </head>
   <body>
     <div class="app-shell">
@@ -26,6 +26,7 @@
         <div class="sidebar-label second-label">SYSTEM</div>
         <nav class="nav-list" aria-label="系统导航">
           <button class="nav-item" data-view="jobs"><span class="nav-icon">≡</span><span>任务队列</span><em id="jobNavCount">—</em></button>
+          <button class="nav-item" data-view="priority"><span class="nav-icon">⇵</span><span>优先级规则</span><em id="priorityNavBadge">—</em></button>
           <button class="nav-item" data-view="settings"><span class="nav-icon">⊙</span><span>采集设置</span></button>
         </nav>
         <div class="sidebar-footer">
@@ -153,8 +154,8 @@
                   <strong id="ovGpuModels">—</strong>
                   <small id="ovGpuPartitions">Slurm 计算分区</small>
                 </div>
-                <div class="storage-meta-card">
-                  <span class="meta-label">作业调度负载</span>
+                <div class="storage-meta-card clickable-card" data-view="priority" title="点击查看 Slurm 调度优先级规则与排队阶梯">
+                  <span class="meta-label">作业调度与我的优先级 →</span>
                   <strong id="ovQueueSummary">—</strong>
                   <small id="ovQueueSub">队列实时状态</small>
                 </div>
@@ -405,7 +406,8 @@
                 <h2>全部任务队列</h2>
               </div>
               <div class="panel-tools">
-                <input type="search" id="jobSearchInput" class="search-input" placeholder="搜索任务名 / 用户 / 节点…" />
+                <button class="btn-chip" type="button" data-view="priority">⇵ 优先级规则与排队阶梯 →</button>
+                <input type="search" id="jobSearchInput" class="search-input" placeholder="搜索任务名 / 用户 / 账户 / 节点…" />
                 <div class="segmented" id="jobFilter">
                   <button class="selected" data-job-filter="all">全部</button>
                   <button data-job-filter="RUNNING">运行中</button>
@@ -417,7 +419,7 @@
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr><th>任务</th><th>用户</th><th>分区</th><th>节点</th><th>GPU</th><th>运行时间</th><th>状态</th></tr>
+                  <tr><th>任务</th><th>用户 / 账户</th><th>分区</th><th>节点</th><th>GPU</th><th>优先级 (FairShare+Part+Age)</th><th>运行 / 时限</th><th>状态</th></tr>
                 </thead>
                 <tbody id="jobsTable"></tbody>
               </table>
@@ -429,7 +431,225 @@
           </article>
         </div>
 
-        <!-- ==================== VIEW 5: SETTINGS (采集设置独立页) ==================== -->
+        <!-- ==================== VIEW 5: PRIORITY (调度优先级规则与实时透视) ==================== -->
+        <div class="view-page" id="viewPriority" data-page="priority">
+          <section class="stats-grid subpage-stats">
+            <article class="stat-card accent-purple">
+              <div class="stat-top"><span>我的当前任务优先级</span><span class="stat-icon">⇵</span></div>
+              <div class="stat-value"><strong id="prioCardMine">—</strong><small id="prioCardMineUnit"> pts</small></div>
+              <div class="stat-foot"><span class="trend neutral" id="prioCardMineBreakdown">等待数据</span><span id="prioCardMineAcct">关联账户 —</span></div>
+            </article>
+            <article class="stat-card accent-green">
+              <div class="stat-top"><span>我的可调度顺位</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value"><strong id="prioCardRank">—</strong><small id="prioCardRankSub"></small></div>
+              <div class="stat-foot"><span class="trend up" id="prioCardAheadGpus">前序竞争 —</span><span id="prioCardMinePending">排队 —</span></div>
+            </article>
+            <article class="stat-card accent-blue">
+              <div class="stat-top"><span>FairShare 核心权重</span><span class="stat-icon">◒</span></div>
+              <div class="stat-value"><strong id="prioCardFsWeight">50,000</strong><small id="prioCardFsMax">/ ku 上限 3,125分</small></div>
+              <div class="stat-foot"><span class="trend up" id="prioCardHalfLife">半衰期 7 天衰减</span><span>NO_FAIR_TREE 算法</span></div>
+            </article>
+            <article class="stat-card accent-orange">
+              <div class="stat-top"><span>排队时长加成 (Age)</span><span class="stat-icon">✦</span></div>
+              <div class="stat-value"><strong id="prioCardAgeRate">+5.95</strong><small> 分/小时</small></div>
+              <div class="stat-foot"><span class="trend warn" id="prioCardAgeCap">7 天满额 1,000 分</span><span id="prioCardSchedMode">sched/backfill</span></div>
+            </article>
+          </section>
+
+          <section class="content-grid priority-top-grid">
+            <!-- 左栏：Slurm 多因子公式与调度规则可视化 -->
+            <article class="panel prio-rules-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">SLURM MULTIFACTOR PRIORITY / FORMULA &amp; RULES</p>
+                  <h2>远端 HPC 优先级计算规则透视</h2>
+                </div>
+                <span class="node-badge online" id="prioPluginBadge">priority/multifactor</span>
+              </div>
+
+              <div class="formula-box">
+                <div class="formula-head">
+                  <span>Slurm 实时多因子优先级合成公式 (每 5 分钟重算)</span>
+                  <strong id="prioFormulaMaxNote">ku 课题组理论最高 5,125 分</strong>
+                </div>
+                <div class="formula-equation">
+                  <div class="formula-term total">
+                    <small>总优先级</small>
+                    <strong>Priority</strong>
+                  </div>
+                  <span class="formula-op">=</span>
+                  <div class="formula-term fs">
+                    <small>公平份额 (主导 96%)</small>
+                    <strong>50,000 × FairShare</strong>
+                    <em>ku 范围: 0 ~ 3,125 分</em>
+                  </div>
+                  <span class="formula-op">+</span>
+                  <div class="formula-term part">
+                    <small>分区基础分</small>
+                    <strong>1,000 × Partition</strong>
+                    <em>gpu/prod 固定 1,000 分</em>
+                  </div>
+                  <span class="formula-op">+</span>
+                  <div class="formula-term age">
+                    <small>排队等待分</small>
+                    <strong>1,000 × Age</strong>
+                    <em>+5.95分/h (上限 1,000 分)</em>
+                  </div>
+                </div>
+                <div class="formula-zero-note">
+                  <span>已禁用因子 (权重为 0)：<b>JobSize = 0</b> (不按申请卡数加减分) · <b>QOS = 0</b> · <b>Assoc = 0</b> · <b>TRES = 0</b></span>
+                </div>
+              </div>
+
+              <div class="rules-explain-grid">
+                <div class="rule-card purple">
+                  <div class="rule-card-title"><span>01 · FairShare 公平份额与 7 天半衰期</span><b>最高 3,125 分</b></div>
+                  <p>采用经典指数衰减公式 <code>F = 2^(-EffectvUsage / NormShares)</code>。在 <code>ku</code> 根份额 (<code>0.25</code>) 下，零消耗账户初始为 <code>0.0625 × 50000 = 3125</code> 分。课题组近期跑卡越多，<code>EffectvUsage</code> 越高，FairShare 越接近 0；停止使用后按 <b>7 天半衰期</b>自动回血。</p>
+                </div>
+                <div class="rule-card orange">
+                  <div class="rule-card-title"><span>02 · Age 排队时长线性补偿</span><b>+142.9 分/天</b></div>
+                  <p>合格排队任务每等待 1 小时增加约 <b>5.95 分</b>，满 <b>7 天 (168h)</b> 达到封顶 <b>1,000 分</b>。注意：处于 <code>Dependency</code> (前置依赖) 或 <code>JobHeldUser</code> 状态的任务不参与立即调度。</p>
+                </div>
+                <div class="rule-card blue">
+                  <div class="rule-card-title"><span>03 · 课题组共享份额 (Share=parent)</span><b>同组同分</b></div>
+                  <p>集群账户下个人 <code>RawShares=parent</code>，即同一课题组账户 (如 <code>kuex0095</code>) 内所有成员<b>共享该课题组的历史总消耗与 FairShare 分数</b>。若拥有多个关联账户，选择低消耗账户提交可大幅提升初始优先级。</p>
+                </div>
+                <div class="rule-card green">
+                  <div class="rule-card-title"><span>04 · Backfill 回填插空与无抢占机制</span><b>sched/backfill</b></div>
+                  <p><code>PreemptMode=OFF</code> 意味着运行中任务绝不会被高优任务强行中断（<code>gpu</code> 分区最长 3 天）。当排第一的大任务正在等待凑齐多张 GPU 时，申请<b>较少卡数</b>或声明<b>较短 <code>--time</code> 时限</b>的低优任务可触发 Backfill 提前插空运行。</p>
+                </div>
+              </div>
+            </article>
+
+            <!-- 右栏：我的关联账户对比 + 交互式排队模拟器 -->
+            <article class="panel prio-sim-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">MY ACCOUNTS &amp; WHAT-IF SIMULATOR</p>
+                  <h2>我的账户优先级对比与推演</h2>
+                </div>
+                <span class="small-muted" id="prioSimUserTag">SSH User</span>
+              </div>
+
+              <div class="my-accounts-section">
+                <div class="sub-section-head">
+                  <span>当前用户可用 Slurm 账户对比 (来自 <code>sshare</code>)</span>
+                  <small id="myAccountsHint">点击账户可带入下方模拟器</small>
+                </div>
+                <div class="my-accounts-grid" id="myAccountsList"></div>
+              </div>
+
+              <div class="simulator-box">
+                <div class="sub-section-head">
+                  <span>交互式优先级与插队推演器</span>
+                  <strong id="simResultTotal">预计总分: —</strong>
+                </div>
+                <div class="sim-controls">
+                  <label class="sim-slider-row">
+                    <div class="sim-slider-label">
+                      <span>账户 FairShare 得分 (<code>0 ~ 3,125</code>)</span>
+                      <strong id="simFsValLabel">1,028 分</strong>
+                    </div>
+                    <input type="range" id="simFsSlider" min="0" max="3125" step="1" value="1028" />
+                  </label>
+                  <label class="sim-slider-row">
+                    <div class="sim-slider-label">
+                      <span>已排队等待时长 (<code>0 ~ 168 小时 / 7天</code>)</span>
+                      <strong id="simAgeValLabel">0 小时 (+0 分)</strong>
+                    </div>
+                    <input type="range" id="simAgeSlider" min="0" max="168" step="1" value="0" />
+                  </label>
+                </div>
+                <div class="sim-outcome-grid">
+                  <div class="sim-outcome-card">
+                    <span>模拟可调度顺位</span>
+                    <strong id="simRankResult">—</strong>
+                    <small id="simRankSub">在当前可调度队列中的位置</small>
+                  </div>
+                  <div class="sim-outcome-card">
+                    <span>前序竞争 GPU 数量</span>
+                    <strong id="simAheadGpusResult">—</strong>
+                    <small id="simAheadSub">优先级高于此分数的待分配卡数</small>
+                  </div>
+                  <div class="sim-outcome-card">
+                    <span>超越前一名所需等待</span>
+                    <strong id="simOvertakeResult">—</strong>
+                    <small id="simOvertakeSub">按 +5.95 分/小时差值推算</small>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <!-- 第三行：实时排队优先级阶梯图 (sprio + squeue) -->
+          <article class="panel prio-ladder-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">LIVE QUEUE PRIORITY LADDER / SPRIO BREAKDOWN</p>
+                <h2>实时排队任务优先级阶梯图</h2>
+              </div>
+              <div class="panel-tools">
+                <div class="segmented" id="prioLadderFilter">
+                  <button class="selected" data-ladder-filter="all">全部排队批次</button>
+                  <button data-ladder-filter="eligible">仅可立即调度 (Eligible)</button>
+                  <button data-ladder-filter="mine">我的排队任务</button>
+                </div>
+                <div class="segmented" id="prioLadderMode">
+                  <button class="selected" data-ladder-mode="groups">按批次聚合</button>
+                  <button data-ladder-mode="jobs">逐个任务展开</button>
+                </div>
+              </div>
+            </div>
+            <div class="gpu-summary">
+              <div class="legend">
+                <span><i class="legend-dot purple"></i><b>FairShare</b> 公平份额分 (权重 50,000)</span>
+                <span><i class="legend-dot blue"></i><b>Partition</b> 分区基础分 (固定 1,000)</span>
+                <span><i class="legend-dot orange"></i><b>Age</b> 排队时长加成 (权重 1,000)</span>
+                <span><i class="legend-dot green"></i><b>Eligible</b> 正在参与 GPU 竞争</span>
+              </div>
+              <span class="small-muted" id="prioLadderSummaryNote">按总优先级从高到低排序</span>
+            </div>
+            <div class="ladder-list" id="prioLadderList"></div>
+          </article>
+
+          <!-- 第四行：活跃课题组账户 FairShare 排行榜 (sshare) -->
+          <article class="panel prio-accounts-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">SLURM SSHARE / ACCOUNT FAIRSHARE LEADERBOARD</p>
+                <h2>课题组账户 FairShare 份额与历史负载排行</h2>
+              </div>
+              <div class="panel-tools">
+                <div class="segmented" id="prioAccountFilter">
+                  <button class="selected" data-acct-filter="active">当前活跃 / 我的账户</button>
+                  <button data-acct-filter="all">全部有记录账户</button>
+                </div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>课题组账户 (Account)</th>
+                    <th>FairShare 因子 &amp; 得分 (满分 3,125)</th>
+                    <th>新任务初始优先级</th>
+                    <th>近7天衰减负载 (RawUsage)</th>
+                    <th>有效消耗占比 (EffectvUsage)</th>
+                    <th>实时 GPU 任务负载</th>
+                  </tr>
+                </thead>
+                <tbody id="prioAccountsTable"></tbody>
+              </table>
+            </div>
+            <div class="panel-foot">
+              <span id="prioAccountsFootNote">数据来自 <code>sshare -P -l</code> · 份额越高代表近期算力消耗越少，新提交任务优先级越高</span>
+              <button class="text-button" data-view="jobs">查看完整任务队列 <span>→</span></button>
+            </div>
+          </article>
+        </div>
+
+        <!-- ==================== VIEW 6: SETTINGS (采集设置独立页) ==================== -->
         <div class="view-page" id="viewSettings" data-page="settings">
           <section class="settings-section" id="settingsSection">
             <article class="panel settings-panel">
@@ -486,6 +706,6 @@
         </footer>
       </main>
     </div>
-    <script src="app.js?v=7"></script>
+    <script src="app.js?v=8"></script>
   </body>
 </html>

@@ -81,6 +81,13 @@ def _disconnected_payload(error: str = "") -> dict:
             "paths": [],
             "users": [],
         },
+        "priority": {
+            "config": {},
+            "summary": {},
+            "user_accounts": [],
+            "accounts": [],
+            "queue_groups": [],
+        },
     }
 
 
@@ -126,6 +133,13 @@ def _number(value: str | None, default: int = 0) -> int:
         return default
 
 
+def _float(value: str | None, default: float = 0.0) -> float:
+    try:
+        return float(value or "")
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_kv_line(line: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for match in re.finditer(r"([A-Za-z][A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)", line):
@@ -158,8 +172,182 @@ def _model_from_gres(gres: str) -> str:
     return "GPU"
 
 
-def _parse_jobs(raw: str) -> list[dict]:
+_BLOCKED_REASONS = {
+    "Dependency",
+    "DependencyNeverSatisfied",
+    "JobHeldUser",
+    "JobHeldAdmin",
+    "JobArrayTaskLimit",
+    "BeginTime",
+    "ReqNodeNotAvail",
+    "QOSMaxGRESPerUser",
+    "QOSMaxJobsPerUserLimit",
+    "AssocMaxJobsLimit",
+}
+
+
+def _parse_duration_hours(text: str, default: float = 168.0) -> float:
+    raw = (text or "").strip()
+    if not raw:
+        return default
+    days = 0
+    if "-" in raw:
+        d_part, raw = raw.split("-", 1)
+        days = _number(d_part, 0)
+    parts = [ _number(p, 0) for p in raw.split(":") ]
+    hours = parts[0] if len(parts) > 0 else 0
+    mins = parts[1] if len(parts) > 1 else 0
+    secs = parts[2] if len(parts) > 2 else 0
+    total = days * 24.0 + hours + mins / 60.0 + secs / 3600.0
+    return total if total > 0 else default
+
+
+def _parse_priority_config(raw: str) -> dict:
+    kv: dict[str, str] = {}
+    for line in raw.splitlines():
+        if "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        kv[k.strip()] = v.strip()
+
+    w_fairshare = _number(kv.get("PriorityWeightFairShare"), 50000)
+    w_age = _number(kv.get("PriorityWeightAge"), 1000)
+    w_partition = _number(kv.get("PriorityWeightPartition"), 1000)
+    w_jobsize = _number(kv.get("PriorityWeightJobSize"), 0)
+    w_qos = _number(kv.get("PriorityWeightQOS"), 0)
+    w_assoc = _number(kv.get("PriorityWeightAssoc"), 0)
+    max_age_str = kv.get("PriorityMaxAge", "7-00:00:00")
+    decay_str = kv.get("PriorityDecayHalfLife", "7-00:00:00")
+    max_age_hours = _parse_duration_hours(max_age_str, 168.0)
+    decay_hours = _parse_duration_hours(decay_str, 168.0)
+    ku_max_fs = 0.0625
+    ku_max_fs_pts = round(ku_max_fs * w_fairshare)
+
+    return {
+        "priority_type": kv.get("PriorityType", "priority/multifactor"),
+        "priority_flags": kv.get("PriorityFlags", "NO_FAIR_TREE"),
+        "decay_half_life": decay_str,
+        "decay_half_life_days": round(decay_hours / 24.0, 1),
+        "calc_period": kv.get("PriorityCalcPeriod", "00:05:00"),
+        "max_age": max_age_str,
+        "max_age_days": round(max_age_hours / 24.0, 1),
+        "max_age_hours": round(max_age_hours, 1),
+        "favor_small": kv.get("PriorityFavorSmall", "no"),
+        "dampening_factor": _number(kv.get("FairShareDampeningFactor"), 1),
+        "scheduler_type": kv.get("SchedulerType", "sched/backfill"),
+        "preempt_mode": kv.get("PreemptMode", "OFF"),
+        "enforce": kv.get("AccountingStorageEnforce", "associations,limits,qos"),
+        "weights": {
+            "fairshare": w_fairshare,
+            "age": w_age,
+            "partition": w_partition,
+            "jobsize": w_jobsize,
+            "qos": w_qos,
+            "assoc": w_assoc,
+        },
+        "age_points_per_hour": round(w_age / max(max_age_hours, 1.0), 2),
+        "age_points_per_day": round(w_age / max(max_age_hours / 24.0, 1.0), 1),
+        "ku_max_fairshare": ku_max_fs,
+        "ku_max_fairshare_points": ku_max_fs_pts,
+        "ku_max_base_priority": ku_max_fs_pts + w_partition,
+    }
+
+
+def _parse_sprio(raw: str) -> dict[str, dict]:
+    sprio_map: dict[str, dict] = {}
+    for line in raw.splitlines():
+        parts = [p.strip() for p in line.strip().split("|")]
+        if len(parts) < 8:
+            continue
+        job_id = parts[0]
+        if not job_id or not job_id[0].isdigit():
+            continue
+        sprio_map[job_id] = {
+            "priority": _number(parts[1]),
+            "age": _number(parts[2]),
+            "fairshare": _number(parts[3]),
+            "jobsize": _number(parts[4]),
+            "partition": _number(parts[5]),
+            "qos": _number(parts[6]),
+            "nice": _number(parts[7]),
+            "age_norm": _float(parts[8]) if len(parts) > 8 else 0.0,
+            "fairshare_norm": _float(parts[9]) if len(parts) > 9 else 0.0,
+        }
+    return sprio_map
+
+
+def _parse_sshare(
+    raw: str,
+    weight_fairshare: int = 50000,
+    weight_partition: int = 1000,
+) -> tuple[dict[str, dict], list[dict]]:
+    accounts_share: dict[str, dict] = {}
+    user_rows: list[dict] = []
+    for line in raw.splitlines():
+        if "|" not in line:
+            continue
+        parts = line.split("|")
+        if len(parts) < 8:
+            continue
+        acct_raw = parts[0]
+        acct = acct_raw.strip()
+        if not acct or acct.lower() == "account":
+            continue
+        depth = len(acct_raw) - len(acct_raw.lstrip(" "))
+        user = parts[1].strip()
+        raw_shares = parts[2].strip()
+        norm_shares = _float(parts[3].strip())
+        raw_usage = _number(parts[4].strip())
+        norm_usage = _float(parts[5].strip())
+        effectv_usage = _float(parts[6].strip())
+        fairshare = _float(parts[7].strip())
+        tres_run_mins = parts[9].strip() if len(parts) > 9 else ""
+        gpu_run_mins = _gpu_count_from_tres(tres_run_mins)
+        fs_points = round(fairshare * weight_fairshare)
+        base_prio = fs_points + weight_partition
+
+        entry = {
+            "account": acct,
+            "user": user,
+            "depth": depth,
+            "raw_shares": raw_shares,
+            "norm_shares": round(norm_shares, 6),
+            "raw_usage": raw_usage,
+            "raw_usage_hours": round(raw_usage / 3600.0, 1),
+            "norm_usage": round(norm_usage, 6),
+            "effectv_usage": round(effectv_usage, 6),
+            "fairshare": round(fairshare, 6),
+            "fairshare_points": fs_points,
+            "base_priority": base_prio,
+            "gpu_run_mins": gpu_run_mins,
+        }
+        if not user:
+            accounts_share[acct] = entry
+        else:
+            user_rows.append(entry)
+
+    for urow in user_rows:
+        parent_acct = accounts_share.get(urow["account"])
+        urow["account_raw_usage"] = parent_acct["raw_usage"] if parent_acct else urow["raw_usage"]
+        urow["account_raw_usage_hours"] = parent_acct["raw_usage_hours"] if parent_acct else urow["raw_usage_hours"]
+        urow["account_gpu_run_mins"] = parent_acct["gpu_run_mins"] if parent_acct else urow["gpu_run_mins"]
+
+    return accounts_share, user_rows
+
+
+def _parse_jobs(
+    raw: str,
+    sprio_map: dict[str, dict] | None = None,
+    accounts_share: dict[str, dict] | None = None,
+    weights: dict[str, int] | None = None,
+) -> list[dict]:
     jobs = []
+    smap = sprio_map or {}
+    ashare = accounts_share or {}
+    w_fs = (weights or {}).get("fairshare", 50000)
+    w_part = (weights or {}).get("partition", 1000)
+    w_age = (weights or {}).get("age", 1000)
+
     for line in raw.splitlines():
         parts = line.strip().split("|")
         if len(parts) < 8:
@@ -168,16 +356,63 @@ def _parse_jobs(raw: str) -> list[dict]:
         reason = parts[8].strip().strip("()") if len(parts) > 8 else ""
         if reason.lower() in {"none", "null", "(null)"}:
             reason = ""
+        priority = _number(parts[9].strip(), 0) if len(parts) > 9 else 0
+        account = parts[10].strip() if len(parts) > 10 else ""
+        qos = parts[11].strip() if len(parts) > 11 else "normal"
+        time_limit = parts[12].strip() if len(parts) > 12 else ""
+
+        base_job_id = job_id.split("_")[0]
+        sp = smap.get(job_id) or smap.get(base_job_id)
+        acct_info = ashare.get(account)
+
+        if sp:
+            prio_val = priority or sp["priority"]
+            fs_pts = sp["fairshare"]
+            part_pts = sp["partition"]
+            age_pts = sp["age"]
+            qos_pts = sp["qos"]
+            js_pts = sp["jobsize"]
+            fs_norm = sp["fairshare_norm"] or (acct_info["fairshare"] if acct_info else round(fs_pts / max(w_fs, 1), 6))
+            age_norm = sp["age_norm"] or round(age_pts / max(w_age, 1), 6)
+            in_sprio = True
+        else:
+            prio_val = priority
+            part_pts = w_part if prio_val >= w_part else 0
+            acct_fs_pts = acct_info["fairshare_points"] if acct_info else 0
+            fs_pts = min(acct_fs_pts, max(prio_val - part_pts, 0))
+            age_pts = max(prio_val - part_pts - fs_pts, 0)
+            qos_pts = 0
+            js_pts = 0
+            fs_norm = acct_info["fairshare"] if acct_info else round(fs_pts / max(w_fs, 1), 6)
+            age_norm = min(round(age_pts / max(w_age, 1), 6), 1.0)
+            in_sprio = False
+
+        eligible = status == "PENDING" and reason not in _BLOCKED_REASONS
         jobs.append({
             "id": job_id,
             "name": name,
             "owner": owner,
+            "account": account,
+            "qos": qos,
             "partition": partition,
             "gpus": _gpu_request(gres),
             "elapsed": elapsed,
+            "time_limit": time_limit,
             "status": status,
             "node": node if node != "(null)" else "",
             "reason": reason,
+            "priority": prio_val,
+            "eligible": eligible,
+            "prio_breakdown": {
+                "fairshare": fs_pts,
+                "partition": part_pts,
+                "age": age_pts,
+                "qos": qos_pts,
+                "jobsize": js_pts,
+                "fairshare_norm": round(fs_norm, 6),
+                "age_norm": round(age_norm, 6),
+                "in_sprio": in_sprio,
+            },
         })
     return jobs
 
@@ -196,8 +431,179 @@ def _parse_partitions(raw: str) -> dict[str, dict]:
             "allow_accounts": allow_accounts,
             "allow_groups": allow_groups,
             "restricted": allow_accounts.upper() not in {"ALL", ""},
+            "priority_job_factor": _number(fields.get("PriorityJobFactor"), 1),
+            "priority_tier": _number(fields.get("PriorityTier"), 1),
+            "max_time": fields.get("MaxTime", ""),
+            "preempt_mode": fields.get("PreemptMode", "OFF"),
         }
     return partitions
+
+
+def _build_priority_payload(
+    config: dict,
+    all_jobs: list[dict],
+    accounts_share: dict[str, dict],
+    user_rows: list[dict],
+    ssh_user: str,
+    partitions_map: dict[str, dict],
+) -> dict:
+    acct_job_stats: dict[str, dict] = {}
+    for job in all_jobs:
+        acct = job.get("account") or ""
+        if not acct:
+            continue
+        st = acct_job_stats.setdefault(
+            acct,
+            {"running_jobs": 0, "running_gpus": 0, "pending_jobs": 0, "pending_gpus": 0, "users": set()},
+        )
+        st["users"].add(job["owner"])
+        if job["status"] == "RUNNING":
+            st["running_jobs"] += 1
+            st["running_gpus"] += job["gpus"]
+        else:
+            st["pending_jobs"] += 1
+            st["pending_gpus"] += job["gpus"]
+
+    my_acct_names = {r["account"] for r in user_rows}
+    for job in all_jobs:
+        if job["owner"] == ssh_user and job.get("account"):
+            my_acct_names.add(job["account"])
+
+    enriched_user_accounts = []
+    seen_user_accts = set()
+    for row in user_rows:
+        acct_name = row["account"]
+        seen_user_accts.add(acct_name)
+        my_running = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] == "RUNNING")
+        my_pending = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
+        my_pending_gpus = sum(j["gpus"] for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
+        enriched_user_accounts.append({
+            **row,
+            "my_running_jobs": my_running,
+            "my_pending_jobs": my_pending,
+            "my_pending_gpus": my_pending_gpus,
+        })
+    enriched_user_accounts.sort(key=lambda x: (-x["base_priority"], x["account"]))
+
+    pending_jobs = [j for j in all_jobs if j["status"] != "RUNNING"]
+    pending_jobs.sort(key=lambda j: (-j["priority"], 0 if j["eligible"] else 1, j["id"]))
+
+    groups_map: dict[tuple, dict] = {}
+    for job in pending_jobs:
+        key = (job["owner"], job["account"], job["partition"], job["priority"], job["reason"], job["eligible"])
+        if key not in groups_map:
+            groups_map[key] = {
+                "owner": job["owner"],
+                "account": job["account"],
+                "partition": job["partition"],
+                "priority": job["priority"],
+                "reason": job["reason"],
+                "eligible": job["eligible"],
+                "is_mine": job["owner"] == ssh_user,
+                "job_count": 0,
+                "total_gpus": 0,
+                "sample_job_id": job["id"],
+                "sample_job_name": job["name"],
+                "time_limit": job.get("time_limit", ""),
+                "prio_breakdown": job["prio_breakdown"],
+                "job_ids": [],
+            }
+        grp = groups_map[key]
+        grp["job_count"] += 1
+        grp["total_gpus"] += job["gpus"]
+        if len(grp["job_ids"]) < 6:
+            grp["job_ids"].append(job["id"])
+
+    queue_groups = list(groups_map.values())
+    queue_groups.sort(key=lambda g: (-g["priority"], 0 if g["eligible"] else 1, g["sample_job_id"]))
+
+    eligible_rank = 0
+    cum_eligible_gpus = 0
+    cum_eligible_jobs = 0
+    for grp in queue_groups:
+        grp["gpus_ahead"] = cum_eligible_gpus
+        grp["jobs_ahead"] = cum_eligible_jobs
+        if grp["eligible"]:
+            eligible_rank += 1
+            grp["eligible_rank"] = eligible_rank
+            cum_eligible_gpus += grp["total_gpus"]
+            cum_eligible_jobs += grp["job_count"]
+        else:
+            grp["eligible_rank"] = None
+
+    my_pending_groups = [g for g in queue_groups if g["is_mine"]]
+    my_top_pending = my_pending_groups[0] if my_pending_groups else None
+    my_best_acct = enriched_user_accounts[0] if enriched_user_accounts else None
+    my_active_acct = (
+        next((a for a in enriched_user_accounts if a["my_pending_jobs"] > 0 or a["my_running_jobs"] > 0), None)
+        or my_best_acct
+    )
+
+    accounts_list: list[dict] = []
+    for acct_name, info in accounts_share.items():
+        if acct_name in {"root", "ku", "gl", "exporter", "gl--default-g", "ku--default-g-ipa"}:
+            continue
+        st = acct_job_stats.get(acct_name, {"running_jobs": 0, "running_gpus": 0, "pending_jobs": 0, "pending_gpus": 0, "users": set()})
+        is_active = st["running_jobs"] > 0 or st["pending_jobs"] > 0
+        is_mine = acct_name in my_acct_names
+        if not is_active and not is_mine and info["raw_usage"] == 0:
+            continue
+        accounts_list.append({
+            **info,
+            "is_mine": is_mine,
+            "is_active": is_active,
+            "running_jobs": st["running_jobs"],
+            "running_gpus": st["running_gpus"],
+            "pending_jobs": st["pending_jobs"],
+            "pending_gpus": st["pending_gpus"],
+            "active_users_count": len(st["users"]),
+        })
+
+    accounts_list.sort(
+        key=lambda a: (
+            0 if (a["is_active"] or a["is_mine"]) else 1,
+            -a["fairshare_points"],
+            -a["running_gpus"],
+            a["account"],
+        )
+    )
+
+    summary = {
+        "ssh_user": ssh_user,
+        "my_current_priority": (
+            my_top_pending["priority"]
+            if my_top_pending
+            else (my_active_acct["base_priority"] if my_active_acct else 0)
+        ),
+        "my_current_account": (
+            my_top_pending["account"]
+            if my_top_pending
+            else (my_active_acct["account"] if my_active_acct else "")
+        ),
+        "my_best_account": my_best_acct["account"] if my_best_acct else "",
+        "my_best_base_priority": my_best_acct["base_priority"] if my_best_acct else 0,
+        "my_best_fairshare_points": my_best_acct["fairshare_points"] if my_best_acct else 0,
+        "my_eligible_rank": my_top_pending["eligible_rank"] if my_top_pending else None,
+        "my_gpus_ahead": my_top_pending["gpus_ahead"] if my_top_pending else cum_eligible_gpus,
+        "my_jobs_ahead": my_top_pending["jobs_ahead"] if my_top_pending else cum_eligible_jobs,
+        "my_pending_jobs": sum(g["job_count"] for g in my_pending_groups),
+        "my_pending_gpus": sum(g["total_gpus"] for g in my_pending_groups),
+        "total_pending_groups": len(queue_groups),
+        "eligible_groups_count": eligible_rank,
+        "eligible_jobs_count": cum_eligible_jobs,
+        "eligible_gpus_total": cum_eligible_gpus,
+        "highest_pending_priority": queue_groups[0]["priority"] if queue_groups else 0,
+        "lowest_pending_priority": queue_groups[-1]["priority"] if queue_groups else 0,
+    }
+
+    return {
+        "config": config,
+        "summary": summary,
+        "user_accounts": enriched_user_accounts,
+        "queue_groups": queue_groups,
+        "accounts": accounts_list[:60],
+        "partitions": list(partitions_map.values()),
+    }
 
 
 _DOWN_STATES = {
@@ -638,19 +1044,25 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     probe_command = (
         r'''printf '__MADAR_PARTITIONS__\n'; scontrol show partition -o 2>/dev/null; '''
         r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; '''
-        r'''printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r" 2>/dev/null'''
+        r'''printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r|%Q|%a|%q|%l" 2>/dev/null; '''
+        r'''printf '__MADAR_SPRIO__\n'; sprio -h -p gpu,interactive -o "%i|%Y|%A|%F|%J|%P|%Q|%N|%a|%f" 2>/dev/null; '''
+        r'''printf '__MADAR_SSHARE__\n'; sshare -P -l 2>/dev/null; '''
+        r'''printf '__MADAR_PRIO_CFG__\n'; scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)"'''
     )
     if need_init_fs:
         probe_command += r'''; printf '__MADAR_STORAGE__\n'; ''' + _STORAGE_INIT_COMMAND
 
     raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 20))
-    sections = {"partitions": [], "nodes": [], "queue": [], "storage": []}
+    sections = {"partitions": [], "nodes": [], "queue": [], "sprio": [], "sshare": [], "prio_cfg": [], "storage": []}
     current = None
     for line in raw.splitlines():
         marker = {
             "__MADAR_PARTITIONS__": "partitions",
             "__MADAR_NODES__": "nodes",
             "__MADAR_QUEUE__": "queue",
+            "__MADAR_SPRIO__": "sprio",
+            "__MADAR_SSHARE__": "sshare",
+            "__MADAR_PRIO_CFG__": "prio_cfg",
             "__MADAR_STORAGE__": "storage",
         }.get(line.strip())
         if marker:
@@ -661,10 +1073,22 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     partitions_raw = "\n".join(sections["partitions"])
     nodes_raw = "\n".join(sections["nodes"])
     queue_raw = "\n".join(sections["queue"])
+    sprio_raw = "\n".join(sections["sprio"])
+    sshare_raw = "\n".join(sections["sshare"])
+    prio_cfg_raw = "\n".join(sections["prio_cfg"])
     storage_raw = "\n".join(sections["storage"]) if need_init_fs else None
+
     partitions_map = _parse_partitions(partitions_raw)
-    all_jobs = _parse_jobs(queue_raw)
-    all_jobs.sort(key=lambda j: (0 if j["status"] == "RUNNING" else 1, j["id"]))
+    prio_config = _parse_priority_config(prio_cfg_raw)
+    weights = prio_config["weights"]
+    sprio_map = _parse_sprio(sprio_raw)
+    accounts_share, user_rows = _parse_sshare(
+        sshare_raw,
+        weight_fairshare=weights["fairshare"],
+        weight_partition=weights["partition"],
+    )
+    all_jobs = _parse_jobs(queue_raw, sprio_map=sprio_map, accounts_share=accounts_share, weights=weights)
+    all_jobs.sort(key=lambda j: (0 if j["status"] == "RUNNING" else 1, -j.get("priority", 0), j["id"]))
     active_jobs = sum(1 for job in all_jobs if job["status"] == "RUNNING")
     queued_jobs = sum(1 for job in all_jobs if job["status"] in {"PENDING", "CONFIGURING"})
     jobs = all_jobs[:200]
@@ -672,6 +1096,14 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     if not nodes:
         raise RuntimeError("no GPU nodes were returned by Slurm")
     storage = _collect_storage(storage_raw, force_du=force_du)
+    priority_payload = _build_priority_payload(
+        config=prio_config,
+        all_jobs=all_jobs,
+        accounts_share=accounts_share,
+        user_rows=user_rows,
+        ssh_user=storage.get("user", "user"),
+        partitions_map=partitions_map,
+    )
     total_gpus = sum(node["total"] for node in nodes)
     allocated_gpus = sum(min(node["allocated"], node["total"]) for node in nodes)
     maintenance_gpus = sum(1 for gpu in gpus if gpu["status"] == "maintenance" and gpu.get("substatus") != "restricted")
@@ -712,6 +1144,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         "gpus": gpus,
         "jobs": jobs,
         "storage": storage,
+        "priority": priority_payload,
     }
 
 
