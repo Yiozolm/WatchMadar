@@ -439,6 +439,17 @@ def _parse_partitions(raw: str) -> dict[str, dict]:
     return partitions
 
 
+_GENERIC_SHARED_ACCOUNTS = {
+    "root",
+    "ku",
+    "gl",
+    "exporter",
+    "ku--default-g",
+    "gl--default-g",
+    "ku--default-g-ipa",
+}
+
+
 def _build_priority_payload(
     config: dict,
     all_jobs: list[dict],
@@ -464,24 +475,116 @@ def _build_priority_payload(
             st["pending_jobs"] += 1
             st["pending_gpus"] += job["gpus"]
 
-    my_acct_names = {r["account"] for r in user_rows}
+    my_user_rows = [r for r in user_rows if r["user"] == ssh_user]
+    my_acct_names = {r["account"] for r in my_user_rows}
     for job in all_jobs:
         if job["owner"] == ssh_user and job.get("account"):
             my_acct_names.add(job["account"])
 
+    my_group_accounts = sorted(my_acct_names - _GENERIC_SHARED_ACCOUNTS) or sorted(my_acct_names)
+    my_group_acct_set = set(my_group_accounts)
+
+    group_member_rows = [r for r in user_rows if r["account"] in my_group_acct_set]
+    group_member_users = {r["user"] for r in group_member_rows if r["user"]} | ({ssh_user} if ssh_user else set())
+    for job in all_jobs:
+        if job.get("account") in my_group_acct_set and job.get("owner"):
+            group_member_users.add(job["owner"])
+
+    for job in all_jobs:
+        is_mine = job["owner"] == ssh_user
+        is_group = (job.get("account") in my_group_acct_set) or (job["owner"] in group_member_users)
+        job["is_mine"] = is_mine
+        job["is_group"] = is_group
+        job["is_teammate"] = is_group and not is_mine
+
+    group_members: list[dict] = []
+    seen_members: set[tuple[str, str]] = set()
+    for row in group_member_rows:
+        m_user = row["user"]
+        m_acct = row["account"]
+        if not m_user or (m_acct, m_user) in seen_members:
+            continue
+        seen_members.add((m_acct, m_user))
+        m_jobs = [j for j in all_jobs if j["owner"] == m_user]
+        m_run_jobs = sum(1 for j in m_jobs if j["status"] == "RUNNING")
+        m_run_gpus = sum(j["gpus"] for j in m_jobs if j["status"] == "RUNNING")
+        m_pend_jobs = sum(1 for j in m_jobs if j["status"] != "RUNNING")
+        m_pend_gpus = sum(j["gpus"] for j in m_jobs if j["status"] != "RUNNING")
+        acct_raw = max(row.get("account_raw_usage", 0), 1)
+        usage_share_pct = round(min((row["raw_usage"] / acct_raw) * 100.0, 100.0), 1) if row.get("account_raw_usage", 0) > 0 else 0.0
+        group_members.append({
+            "user": m_user,
+            "account": m_acct,
+            "is_me": m_user == ssh_user,
+            "raw_usage": row["raw_usage"],
+            "raw_usage_hours": row["raw_usage_hours"],
+            "account_raw_usage_hours": row.get("account_raw_usage_hours", 0.0),
+            "usage_share_pct": usage_share_pct,
+            "fairshare": row["fairshare"],
+            "fairshare_points": row["fairshare_points"],
+            "running_jobs": m_run_jobs,
+            "running_gpus": m_run_gpus,
+            "pending_jobs": m_pend_jobs,
+            "pending_gpus": m_pend_gpus,
+            "total_jobs": m_run_jobs + m_pend_jobs,
+        })
+
+    group_members.sort(
+        key=lambda m: (
+            0 if m["is_me"] else 1,
+            -m["total_jobs"],
+            -m["running_gpus"],
+            -m["raw_usage"],
+            m["user"],
+        )
+    )
+
+    group_jobs_all = [j for j in all_jobs if j.get("is_group")]
+    teammate_jobs_all = [j for j in all_jobs if j.get("is_teammate")]
+    primary_group_acct = my_group_accounts[0] if my_group_accounts else ""
+    primary_group_info = accounts_share.get(primary_group_acct, {})
+    group_summary = {
+        "accounts": my_group_accounts,
+        "primary_account": primary_group_acct,
+        "fairshare_points": primary_group_info.get("fairshare_points", 0),
+        "base_priority": primary_group_info.get("base_priority", 0),
+        "account_raw_usage_hours": primary_group_info.get("raw_usage_hours", 0.0),
+        "effectv_usage": primary_group_info.get("effectv_usage", 0.0),
+        "member_count": len(group_members),
+        "active_member_count": sum(1 for m in group_members if m["total_jobs"] > 0),
+        "total_jobs": len(group_jobs_all),
+        "running_jobs": sum(1 for j in group_jobs_all if j["status"] == "RUNNING"),
+        "running_gpus": sum(j["gpus"] for j in group_jobs_all if j["status"] == "RUNNING"),
+        "pending_jobs": sum(1 for j in group_jobs_all if j["status"] != "RUNNING"),
+        "pending_gpus": sum(j["gpus"] for j in group_jobs_all if j["status"] != "RUNNING"),
+        "teammate_total_jobs": len(teammate_jobs_all),
+        "teammate_running_jobs": sum(1 for j in teammate_jobs_all if j["status"] == "RUNNING"),
+        "teammate_running_gpus": sum(j["gpus"] for j in teammate_jobs_all if j["status"] == "RUNNING"),
+        "teammate_pending_jobs": sum(1 for j in teammate_jobs_all if j["status"] != "RUNNING"),
+        "teammate_pending_gpus": sum(j["gpus"] for j in teammate_jobs_all if j["status"] != "RUNNING"),
+        "members": group_members,
+    }
+
     enriched_user_accounts = []
     seen_user_accts = set()
-    for row in user_rows:
+    for row in my_user_rows:
         acct_name = row["account"]
+        if acct_name in seen_user_accts:
+            continue
         seen_user_accts.add(acct_name)
         my_running = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] == "RUNNING")
         my_pending = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
         my_pending_gpus = sum(j["gpus"] for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
+        grp_st = acct_job_stats.get(acct_name, {"running_jobs": 0, "running_gpus": 0, "pending_jobs": 0, "pending_gpus": 0})
         enriched_user_accounts.append({
             **row,
             "my_running_jobs": my_running,
             "my_pending_jobs": my_pending,
             "my_pending_gpus": my_pending_gpus,
+            "group_running_jobs": grp_st["running_jobs"],
+            "group_running_gpus": grp_st["running_gpus"],
+            "group_pending_jobs": grp_st["pending_jobs"],
+            "group_pending_gpus": grp_st["pending_gpus"],
         })
     enriched_user_accounts.sort(key=lambda x: (-x["base_priority"], x["account"]))
 
@@ -499,7 +602,9 @@ def _build_priority_payload(
                 "priority": job["priority"],
                 "reason": job["reason"],
                 "eligible": job["eligible"],
-                "is_mine": job["owner"] == ssh_user,
+                "is_mine": job.get("is_mine", False),
+                "is_group": job.get("is_group", False),
+                "is_teammate": job.get("is_teammate", False),
                 "job_count": 0,
                 "total_gpus": 0,
                 "sample_job_id": job["id"],
@@ -599,6 +704,7 @@ def _build_priority_payload(
     return {
         "config": config,
         "summary": summary,
+        "group": group_summary,
         "user_accounts": enriched_user_accounts,
         "queue_groups": queue_groups,
         "accounts": accounts_list[:60],
@@ -1046,7 +1152,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; '''
         r'''printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r|%Q|%a|%q|%l" 2>/dev/null; '''
         r'''printf '__MADAR_SPRIO__\n'; sprio -h -p gpu,interactive -o "%i|%Y|%A|%F|%J|%P|%Q|%N|%a|%f" 2>/dev/null; '''
-        r'''printf '__MADAR_SSHARE__\n'; sshare -P -l 2>/dev/null; '''
+        r'''printf '__MADAR_SSHARE__\n'; sshare -a -P -l 2>/dev/null; '''
         r'''printf '__MADAR_PRIO_CFG__\n'; scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)"'''
     )
     if need_init_fs:
@@ -1091,7 +1197,6 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     all_jobs.sort(key=lambda j: (0 if j["status"] == "RUNNING" else 1, -j.get("priority", 0), j["id"]))
     active_jobs = sum(1 for job in all_jobs if job["status"] == "RUNNING")
     queued_jobs = sum(1 for job in all_jobs if job["status"] in {"PENDING", "CONFIGURING"})
-    jobs = all_jobs[:200]
     nodes, gpus = _parse_nodes(nodes_raw, all_jobs, partitions_map)
     if not nodes:
         raise RuntimeError("no GPU nodes were returned by Slurm")
@@ -1104,6 +1209,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         ssh_user=storage.get("user", "user"),
         partitions_map=partitions_map,
     )
+    jobs = all_jobs[:300]
     total_gpus = sum(node["total"] for node in nodes)
     allocated_gpus = sum(min(node["allocated"], node["total"]) for node in nodes)
     maintenance_gpus = sum(1 for gpu in gpus if gpu["status"] == "maintenance" and gpu.get("substatus") != "restricted")

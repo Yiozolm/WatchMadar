@@ -297,10 +297,19 @@ body.light .connection.disconnected { border-color:rgba(207,46,64,.3); backgroun
 .prio-mini-track { height:5px; border-radius:3px; background:var(--track); overflow:hidden; display:flex; gap:1px; }
 .acct-tag { display:inline-block; margin-left:5px; padding:1px 5px; border-radius:4px; font-size:9px; background:rgba(164,198,224,.09); color:var(--muted); }
 .mine-pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:9px; font-weight:600; background:rgba(56,214,161,.16); color:var(--green); }
+.group-pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:9px; font-weight:600; background:rgba(95,169,255,.16); color:var(--blue); }
+.ladder-row.teammate { border-color:rgba(95,169,255,.38); background:rgba(95,169,255,.05); }
+.group-members-grid { grid-template-columns:repeat(auto-fill,minmax(235px,1fr)); }
+.member-job-stats { display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-2); padding:2px 0; }
+.member-job-stats b.run { color:var(--green); }
+.member-job-stats b.pend { color:var(--orange); }
+.owner-link { cursor:pointer; border-bottom:1px dotted rgba(164,198,224,.28); transition:color .15s; }
+.owner-link:hover { color:var(--green); border-bottom-color:var(--green); }
 
 body.light .formula-box, body.light .rule-card, body.light .my-acct-card, body.light .simulator-box, body.light .ladder-row { background:#f5f9fb; border-color:var(--border); }
 body.light .formula-term, body.light .sim-outcome-card { background:#ffffff; border-color:var(--border); }
 body.light .my-acct-card.best, body.light .ladder-row.mine { background:rgba(11,138,96,.07); border-color:rgba(11,138,96,.38); }
+body.light .ladder-row.teammate { background:rgba(24,100,217,.06); border-color:rgba(24,100,217,.35); }
 body.light .rule-card code, body.light .sub-section-head code, body.light .panel-foot code, body.light .sim-slider-label code, body.light .acct-tag { background:#e4edf1; color:var(--text-2); }
 
 @media(max-width:1150px){.main-content{padding:0 24px}.gpu-grid{grid-template-columns:repeat(3,1fr)}.storage-page-grid,.priority-top-grid,.rules-explain-grid{grid-template-columns:1fr}.overview-kpi-grid,.stats-grid,.settings-grid{grid-template-columns:repeat(2,1fr)}.ladder-row{grid-template-columns:60px 1fr;gap:8px}}

@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="shortcut icon" type="image/png" href="logo.png" />
     <link rel="apple-touch-icon" href="logo.png" />
-    <link rel="stylesheet" href="styles.css?v=8" />
+    <link rel="stylesheet" href="styles.css?v=9" />
   </head>
   <body>
     <div class="app-shell">
@@ -393,17 +393,33 @@
               <div class="stat-foot"><span class="trend warn">等待资源或优先级</span><span>排队等待</span></div>
             </article>
             <article class="stat-card accent-blue">
-              <div class="stat-top"><span>我的任务</span><span class="stat-icon">✦</span></div>
-              <div class="stat-value"><strong id="jobPageMine">—</strong><small> jobs</small></div>
-              <div class="stat-foot"><span id="jobPageMineUser">当前 SSH 用户</span><span>个人提交</span></div>
+              <div class="stat-top"><span>我的 / 同组任务</span><span class="stat-icon">✦</span></div>
+              <div class="stat-value"><strong id="jobPageMine">—</strong><small id="jobPageGroupTotal"> / 同组 —</small></div>
+              <div class="stat-foot"><span id="jobPageMineUser">当前 SSH 用户</span><span id="jobPageGroupFoot">同组他人 —</span></div>
             </article>
           </section>
+
+          <article class="panel node-cards-panel group-members-panel" id="groupMembersPanel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">RESEARCH GROUP / TEAMMATES &amp; SHARED FAIRSHARE</p>
+                <h2>同组人员实验任务与份额明细 <small class="filter-tag" id="jobGroupAcctTag"></small></h2>
+              </div>
+              <div class="panel-tools">
+                <span class="small-muted">同组成员共享课题组 FairShare · 点击成员卡片可筛选下方队列</span>
+                <button class="btn-chip" id="filterGroupAllChip" type="button" data-quick-job-filter="group">同组全部</button>
+                <button class="btn-chip" id="filterTeammatesChip" type="button" data-quick-job-filter="teammates">仅同组他人</button>
+                <button class="btn-chip selected" id="clearMemberFilterBtn" type="button">显示全集群</button>
+              </div>
+            </div>
+            <div class="node-detail-grid group-members-grid" id="groupMembersGrid"></div>
+          </article>
 
           <article class="panel jobs-panel" id="jobsSection">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">SCHEDULER / SLURM QUEUE</p>
-                <h2>全部任务队列</h2>
+                <h2>全部任务队列 <small class="filter-tag" id="jobActiveMemberTag"></small></h2>
               </div>
               <div class="panel-tools">
                 <button class="btn-chip" type="button" data-view="priority">⇵ 优先级规则与排队阶梯 →</button>
@@ -412,6 +428,8 @@
                   <button class="selected" data-job-filter="all">全部</button>
                   <button data-job-filter="RUNNING">运行中</button>
                   <button data-job-filter="PENDING">排队中</button>
+                  <button data-job-filter="group">同组全部</button>
+                  <button data-job-filter="teammates">同组他人</button>
                   <button data-job-filter="mine">我的任务</button>
                 </div>
               </div>
@@ -592,6 +610,7 @@
                 <div class="segmented" id="prioLadderFilter">
                   <button class="selected" data-ladder-filter="all">全部排队批次</button>
                   <button data-ladder-filter="eligible">仅可立即调度 (Eligible)</button>
+                  <button data-ladder-filter="group">同组排队任务</button>
                   <button data-ladder-filter="mine">我的排队任务</button>
                 </div>
                 <div class="segmented" id="prioLadderMode">
@@ -706,6 +725,6 @@
         </footer>
       </main>
     </div>
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=9"></script>
   </body>
 </html>

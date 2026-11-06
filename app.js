@@ -3,6 +3,7 @@ const state = {
   gpuFilter: "all",
   selectedNode: "all",
   jobFilter: "all",
+  selectedMember: "all",
   jobSearch: "",
   ladderFilter: "all",
   ladderMode: "groups",
@@ -735,13 +736,18 @@ function renderStoragePage() {
 
 function renderJobRowHtml(job, sshUser = "") {
   const isPending = job.status === "PENDING";
-  const isMine = sshUser && job.owner === sshUser;
+  const isMine = Boolean(job.is_mine || (sshUser && job.owner === sshUser));
+  const isTeammate = Boolean(job.is_teammate);
   const reasonText = isPending && job.reason ? REASON_LABELS[job.reason] || job.reason : "";
   const statusLabel = reasonText ? `PENDING · ${reasonText}` : job.status;
   const statusTitle = isPending && job.reason ? `排队原因: ${job.reason}` : job.node ? `运行节点: ${job.node}` : "";
   const nodeCell = job.node ? escapeHtml(job.node) : `<span style="color:var(--muted-2)">—</span>`;
   const acctHtml = job.account ? `<span class="acct-tag">${escapeHtml(job.account)}</span>` : "";
-  const mineHtml = isMine ? `<span class="mine-pill" style="margin-left:5px">我</span>` : "";
+  const relationHtml = isMine
+    ? `<span class="mine-pill" style="margin-left:5px">我</span>`
+    : isTeammate
+      ? `<span class="group-pill" style="margin-left:5px">同组</span>`
+      : "";
 
   const prio = Number(job.priority) || 0;
   const bd = job.prio_breakdown || { fairshare: 0, partition: 0, age: 0 };
@@ -751,10 +757,15 @@ function renderJobRowHtml(job, sshUser = "") {
   const agePct = Math.min((bd.age / cap) * 100, Math.max(100 - fsPct - partPct, 0));
   const prioTooltip = `总优先级 ${prio} = 公平份额(FairShare) ${bd.fairshare} + 分区(Partition) ${bd.partition} + 排队时长(Age) ${bd.age}`;
   const timeText = job.time_limit ? `${escapeHtml(job.elapsed)} / <span style="color:var(--muted-2)">${escapeHtml(job.time_limit)}</span>` : escapeHtml(job.elapsed);
+  const rowStyle = isMine
+    ? `style="background:rgba(56,214,161,.04)"`
+    : isTeammate
+      ? `style="background:rgba(95,169,255,.04)"`
+      : "";
 
-  return `<tr>
+  return `<tr ${rowStyle}>
     <td>${escapeHtml(job.name)}<span class="job-id">${escapeHtml(job.id)}</span></td>
-    <td class="owner">${escapeHtml(job.owner)}${acctHtml}${mineHtml}</td>
+    <td class="owner"><span class="owner-link" data-select-member="${escapeHtml(job.owner)}" title="点击只看 ${escapeHtml(job.owner)} 的任务">${escapeHtml(job.owner)}</span>${acctHtml}${relationHtml}</td>
     <td>${escapeHtml(job.partition)}</td>
     <td>${nodeCell}</td>
     <td>${job.gpus}</td>
@@ -773,8 +784,17 @@ function renderJobRowHtml(job, sshUser = "") {
   </tr>`;
 }
 
+function syncJobFilterButtons() {
+  $$("#jobFilter button").forEach((item) => {
+    item.classList.toggle("selected", item.dataset.jobFilter === state.jobFilter && state.selectedMember === "all");
+  });
+  $("#filterGroupAllChip")?.classList.toggle("selected", state.jobFilter === "group" && state.selectedMember === "all");
+  $("#filterTeammatesChip")?.classList.toggle("selected", state.jobFilter === "teammates" && state.selectedMember === "all");
+  $("#clearMemberFilterBtn")?.classList.toggle("selected", state.jobFilter === "all" && state.selectedMember === "all");
+}
+
 function renderJobsPage() {
-  const { cluster, jobs = [], storage } = state.data;
+  const { cluster, jobs = [], storage, priority } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   if (!isLive) {
     $("#jobPageTotal").textContent = "—";
@@ -782,6 +802,12 @@ function renderJobsPage() {
     $("#jobPageGpuUsed").textContent = "未连接";
     $("#jobPagePending").textContent = "—";
     $("#jobPageMine").textContent = "—";
+    $("#jobPageGroupTotal").textContent = " / 同组 —";
+    $("#jobPageMineUser").textContent = "未连接";
+    $("#jobPageGroupFoot").textContent = "同组他人 —";
+    $("#jobGroupAcctTag").textContent = "";
+    $("#jobActiveMemberTag").textContent = "";
+    $("#groupMembersGrid").innerHTML = `<div class="empty-state">未连接服务器，暂无同组人员数据</div>`;
     $("#jobsShownCount").textContent = "0";
     $("#jobsTotalCount").textContent = "0";
     $("#jobsTable").innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted-2);padding:24px 8px;">未连接服务器，暂无任务队列数据</td></tr>`;
@@ -789,9 +815,15 @@ function renderJobsPage() {
   }
 
   const sshUser = storage?.user || "";
+  const groupInfo = priority?.group || {};
+  const members = groupInfo.members || [];
   const runningJobs = jobs.filter((j) => j.status === "RUNNING");
   const pendingJobs = jobs.filter((j) => j.status !== "RUNNING");
-  const myJobs = jobs.filter((j) => j.owner === sshUser);
+  const myJobs = jobs.filter((j) => j.is_mine || j.owner === sshUser);
+  const myRunningCount = myJobs.filter((j) => j.status === "RUNNING").length;
+  const myPendingCount = myJobs.length - myRunningCount;
+  const groupJobsCount = groupInfo.total_jobs ?? jobs.filter((j) => j.is_group).length;
+  const teammateJobsCount = groupInfo.teammate_total_jobs ?? jobs.filter((j) => j.is_teammate).length;
   const runningGpuSum = runningJobs.reduce((acc, j) => acc + (Number(j.gpus) || 0), 0);
 
   $("#jobPageTotal").textContent = jobs.length;
@@ -799,13 +831,80 @@ function renderJobsPage() {
   $("#jobPageGpuUsed").textContent = `共占用 ${runningGpuSum} 张 GPU`;
   $("#jobPagePending").textContent = pendingJobs.length;
   $("#jobPageMine").textContent = myJobs.length;
-  $("#jobPageMineUser").textContent = sshUser ? `用户 ${sshUser}` : "当前 SSH 用户";
+  $("#jobPageGroupTotal").textContent = ` / 同组 ${groupJobsCount} 个`;
+  $("#jobPageMineUser").textContent = `我: ${myRunningCount} 运行 · ${myPendingCount} 排队`;
+  $("#jobPageGroupFoot").textContent = `同组他人: ${groupInfo.teammate_running_jobs ?? 0} 运行 · ${groupInfo.teammate_pending_jobs ?? 0} 排队`;
+
+  const primaryAcct = groupInfo.primary_account || "";
+  $("#jobGroupAcctTag").textContent = primaryAcct
+    ? `· 课题组 ${primaryAcct} (共 ${members.length} 人 · 组内在跑 ${groupInfo.running_gpus ?? 0} 卡 / 排队 ${groupInfo.pending_gpus ?? 0} 卡)`
+    : "";
+
+  if ($("#filterGroupAllChip")) $("#filterGroupAllChip").textContent = `同组全部 (${groupJobsCount})`;
+  if ($("#filterTeammatesChip")) $("#filterTeammatesChip").textContent = `仅同组他人 (${teammateJobsCount})`;
+
+  syncJobFilterButtons();
+
+  if (!members.length) {
+    $("#groupMembersGrid").innerHTML = `<div class="empty-state">暂无同组人员关联记录</div>`;
+  } else {
+    $("#groupMembersGrid").innerHTML = members
+      .map((m) => {
+        const isSelected = state.selectedMember === m.user;
+        const badgeCls = m.is_me ? "online" : m.running_jobs > 0 ? "online" : m.pending_jobs > 0 ? "maint" : "idle";
+        const badgeText = m.is_me
+          ? `我 · ${m.total_jobs} 任务`
+          : m.total_jobs > 0
+            ? `同组 · ${m.total_jobs} 任务`
+            : `同组 · 空闲`;
+        const barColor = m.is_me ? "var(--green)" : m.usage_share_pct >= 40 ? "var(--orange)" : "var(--blue)";
+        return `<div class="node-detail-card ${isSelected ? "selected" : ""}" data-select-member="${escapeHtml(m.user)}" title="点击筛选 ${escapeHtml(m.user)} 的实验任务">
+          <div class="node-mini-top">
+            <div class="node-mini-name">
+              <span>${escapeHtml(m.user)}</span>
+              <span class="node-mini-model">${escapeHtml(m.account)}</span>
+            </div>
+            <span class="node-badge ${badgeCls}">${escapeHtml(badgeText)}</span>
+          </div>
+          <div class="member-job-stats">
+            <span>运行 <b class="run">${m.running_jobs}</b> (${m.running_gpus}卡)</span>
+            <span>排队 <b class="pend">${m.pending_jobs}</b> (${m.pending_gpus}卡)</span>
+          </div>
+          <div class="util-bar" title="近7天衰减消耗占全组 ${m.usage_share_pct}%">
+            <span style="width:${Math.max(m.usage_share_pct, m.raw_usage > 0 ? 3 : 0)}%;background:${barColor}"></span>
+          </div>
+          <div class="node-mini-meta">
+            <span>7天消耗 <b>${m.raw_usage_hours.toLocaleString()}h</b></span>
+            <span>占全组消耗 <b>${m.usage_share_pct}%</b></span>
+          </div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  let activeFilterLabel = "";
+  if (state.selectedMember !== "all") {
+    const isMeSelected = state.selectedMember === sshUser;
+    activeFilterLabel = `· 已筛选成员: ${state.selectedMember}${isMeSelected ? " (我)" : " (同组)"}`;
+  } else if (state.jobFilter === "group") {
+    activeFilterLabel = `· 已筛选: 同组全部任务 (${primaryAcct || "同组"})`;
+  } else if (state.jobFilter === "teammates") {
+    activeFilterLabel = `· 已筛选: 同组其他成员任务 (不含本人)`;
+  } else if (state.jobFilter === "mine") {
+    activeFilterLabel = `· 已筛选: 我的任务 (${sshUser})`;
+  }
+  $("#jobActiveMemberTag").textContent = activeFilterLabel;
 
   const keyword = state.jobSearch.trim().toLowerCase();
   const filtered = jobs.filter((job) => {
+    if (state.selectedMember !== "all" && job.owner !== state.selectedMember) return false;
     if (state.jobFilter === "RUNNING" && job.status !== "RUNNING") return false;
     if (state.jobFilter === "PENDING" && job.status === "RUNNING") return false;
-    if (state.jobFilter === "mine" && job.owner !== sshUser) return false;
+    if (state.selectedMember === "all") {
+      if (state.jobFilter === "mine" && !(job.is_mine || job.owner === sshUser)) return false;
+      if (state.jobFilter === "group" && !job.is_group) return false;
+      if (state.jobFilter === "teammates" && !job.is_teammate) return false;
+    }
     if (keyword) {
       const hay = `${job.id} ${job.name} ${job.owner} ${job.account || ""} ${job.partition} ${job.node || ""} ${job.reason || ""}`.toLowerCase();
       if (!hay.includes(keyword)) return false;
@@ -1004,6 +1103,7 @@ function renderPriorityPage() {
   if (state.ladderMode === "groups") {
     ladderItems = queueGroups.filter((g) => {
       if (state.ladderFilter === "eligible") return g.eligible;
+      if (state.ladderFilter === "group") return g.is_group;
       if (state.ladderFilter === "mine") return g.is_mine;
       return true;
     });
@@ -1022,7 +1122,9 @@ function renderPriorityPage() {
           priority: j.priority,
           reason: j.reason,
           eligible: j.eligible,
-          is_mine: j.owner === sshUser,
+          is_mine: Boolean(j.is_mine || j.owner === sshUser),
+          is_group: Boolean(j.is_group),
+          is_teammate: Boolean(j.is_teammate),
           job_count: 1,
           total_gpus: j.gpus,
           sample_job_id: j.id,
@@ -1037,6 +1139,7 @@ function renderPriorityPage() {
       })
       .filter((item) => {
         if (state.ladderFilter === "eligible") return item.eligible;
+        if (state.ladderFilter === "group") return item.is_group;
         if (state.ladderFilter === "mine") return item.is_mine;
         return true;
       });
@@ -1057,14 +1160,18 @@ function renderPriorityPage() {
         const rankHtml = item.eligible
           ? `<div class="ladder-rank"><strong>#${item.eligible_rank}</strong><small>前序 ${item.gpus_ahead} 卡</small></div>`
           : `<div class="ladder-rank"><strong>暂缓阻塞</strong><small>${escapeHtml(reasonCn)}</small></div>`;
-        const mineTag = item.is_mine ? `<span class="mine-pill">我的任务</span>` : "";
+        const mineTag = item.is_mine
+          ? `<span class="mine-pill">我的任务</span>`
+          : item.is_teammate
+            ? `<span class="group-pill">同组人员</span>`
+            : "";
         const batchDesc =
           item.job_count > 1
             ? `共 <b>${item.job_count}</b> 个任务 · 需 <b>${item.total_gpus}</b> 张 GPU · 代表作业 <b>${escapeHtml(item.sample_job_name)}</b> (${escapeHtml(item.sample_job_id)})`
             : `申请 <b>${item.total_gpus}</b> 张 GPU · 作业 <b>${escapeHtml(item.sample_job_name)}</b> (${escapeHtml(item.sample_job_id)})${item.time_limit ? ` · 时限 ${escapeHtml(item.time_limit)}` : ""}`;
         const approxWaitHours = (bd.age / (cfg.age_points_per_hour || 5.95)).toFixed(1);
 
-        return `<div class="ladder-row ${item.is_mine ? "mine" : ""} ${item.eligible ? "" : "blocked"}">
+        return `<div class="ladder-row ${item.is_mine ? "mine" : item.is_teammate ? "teammate" : ""} ${item.eligible ? "" : "blocked"}">
           ${rankHtml}
           <div class="ladder-info">
             <div class="ladder-info-top">
@@ -1293,6 +1400,24 @@ function bindEvents() {
       return;
     }
 
+    const selectMemberEl = event.target.closest("[data-select-member]");
+    if (selectMemberEl) {
+      const memberName = selectMemberEl.dataset.selectMember;
+      state.selectedMember = state.selectedMember === memberName ? "all" : memberName;
+      if (state.activeView !== "jobs") setView("jobs");
+      renderJobsPage();
+      return;
+    }
+
+    const quickJobFilterBtn = event.target.closest("[data-quick-job-filter]");
+    if (quickJobFilterBtn) {
+      const filterMode = quickJobFilterBtn.dataset.quickJobFilter;
+      state.selectedMember = "all";
+      state.jobFilter = filterMode;
+      renderJobsPage();
+      return;
+    }
+
     const simAcctCard = event.target.closest("[data-sim-acct]");
     if (simAcctCard) {
       const acctName = simAcctCard.dataset.simAcct;
@@ -1353,6 +1478,12 @@ function bindEvents() {
     renderGpusPage();
   });
 
+  $("#clearMemberFilterBtn")?.addEventListener("click", () => {
+    state.selectedMember = "all";
+    state.jobFilter = "all";
+    renderJobsPage();
+  });
+
   $$("#gpuFilter button").forEach((button) =>
     button.addEventListener("click", () => {
       $$("#gpuFilter button").forEach((item) => item.classList.remove("selected"));
@@ -1366,6 +1497,7 @@ function bindEvents() {
     button.addEventListener("click", () => {
       $$("#jobFilter button").forEach((item) => item.classList.remove("selected"));
       button.classList.add("selected");
+      state.selectedMember = "all";
       state.jobFilter = button.dataset.jobFilter;
       renderJobsPage();
     })
