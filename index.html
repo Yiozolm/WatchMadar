@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="shortcut icon" type="image/png" href="logo.png" />
     <link rel="apple-touch-icon" href="logo.png" />
-    <link rel="stylesheet" href="styles.css?v=9" />
+    <link rel="stylesheet" href="styles.css?v=10" />
   </head>
   <body>
     <div class="app-shell">
@@ -18,16 +18,16 @@
           <div><strong>madar</strong><small>HPC CONTROL</small></div>
         </div>
         <div class="sidebar-label">MONITORING</div>
-        <nav class="nav-list" aria-label="主导航">
-          <button class="nav-item active" data-view="overview"><span class="nav-icon">◫</span><span>总览</span><em>01</em></button>
-          <button class="nav-item" data-view="gpu"><span class="nav-icon">▦</span><span>GPU 节点</span><em id="gpuNavCount">—</em></button>
-          <button class="nav-item" data-view="storage"><span class="nav-icon">◉</span><span>存储空间</span><em id="storageNavCount">—</em></button>
+        <nav class="nav-list" aria-label="主导航" data-i18n-aria="nav.mainAria">
+          <button class="nav-item active" data-view="overview"><span class="nav-icon">◫</span><span data-i18n="nav.overview">总览</span><em>01</em></button>
+          <button class="nav-item" data-view="gpu"><span class="nav-icon">▦</span><span data-i18n="nav.gpu">GPU 节点</span><em id="gpuNavCount">—</em></button>
+          <button class="nav-item" data-view="storage"><span class="nav-icon">◉</span><span data-i18n="nav.storage">存储空间</span><em id="storageNavCount">—</em></button>
         </nav>
         <div class="sidebar-label second-label">SYSTEM</div>
-        <nav class="nav-list" aria-label="系统导航">
-          <button class="nav-item" data-view="jobs"><span class="nav-icon">≡</span><span>任务队列</span><em id="jobNavCount">—</em></button>
-          <button class="nav-item" data-view="priority"><span class="nav-icon">⇵</span><span>优先级规则</span><em id="priorityNavBadge">—</em></button>
-          <button class="nav-item" data-view="settings"><span class="nav-icon">⊙</span><span>采集设置</span></button>
+        <nav class="nav-list" aria-label="系统导航" data-i18n-aria="nav.sysAria">
+          <button class="nav-item" data-view="jobs"><span class="nav-icon">≡</span><span data-i18n="nav.jobs">任务队列</span><em id="jobNavCount">—</em></button>
+          <button class="nav-item" data-view="priority"><span class="nav-icon">⇵</span><span data-i18n="nav.priority">优先级规则</span><em id="priorityNavBadge">—</em></button>
+          <button class="nav-item" data-view="settings"><span class="nav-icon">⊙</span><span data-i18n="nav.settings">采集设置</span></button>
         </nav>
         <div class="sidebar-footer">
           <div class="connection" id="sidebarConnection"><i></i><div><strong id="collectorStatus">未连接</strong><small id="collectorDetail">等待连接服务器…</small></div></div>
@@ -39,9 +39,10 @@
         <header class="topbar">
           <div class="breadcrumbs"><span>Workspace</span><b>/</b><strong id="pageTitle">总览</strong></div>
           <div class="top-actions">
-            <div class="refresh-state" id="topRefreshState"><i></i><span>实时监控</span><small id="lastUpdated">未连接</small></div>
-            <button class="icon-button" id="refreshButton" title="立即刷新" aria-label="立即刷新">↻</button>
-            <button class="icon-button theme-button" id="themeButton" title="切换主题" aria-label="切换主题">☼</button>
+            <div class="refresh-state" id="topRefreshState"><i></i><span data-i18n="top.liveMonitor">实时监控</span><small id="lastUpdated">未连接</small></div>
+            <button class="icon-button lang-button" id="langButton" type="button" title="Switch Language / 切换语言" aria-label="Switch Language / 切换语言"><span class="lang-opt active" data-lang-opt="zh">中</span><span class="lang-sep">/</span><span class="lang-opt" data-lang-opt="en">EN</span></button>
+            <button class="icon-button" id="refreshButton" title="立即刷新" aria-label="立即刷新" data-i18n-title="top.refreshNow" data-i18n-aria="top.refreshNow">↻</button>
+            <button class="icon-button theme-button" id="themeButton" title="切换主题" aria-label="切换主题" data-i18n-title="top.toggleTheme" data-i18n-aria="top.toggleTheme">☼</button>
           </div>
         </header>
 
@@ -63,24 +64,24 @@
         <!-- ==================== VIEW 1: OVERVIEW (首页总览) ==================== -->
         <div class="view-page active" id="viewOverview" data-page="overview">
           <section class="stats-grid" id="overviewStats">
-            <article class="stat-card accent-green clickable-card" data-view="gpu" title="点击查看具体 GPU 使用情况">
-              <div class="stat-top"><span>GPU 可用在线</span><span class="stat-icon">⌁</span></div>
+            <article class="stat-card accent-green clickable-card" data-view="gpu" title="点击查看具体 GPU 使用情况" data-i18n-title="ov.cardGpuTitle">
+              <div class="stat-top"><span data-i18n="ov.cardGpuOnline">GPU 可用在线</span><span class="stat-icon">⌁</span></div>
               <div class="stat-value"><strong id="gpuOnline">—</strong><small>/ <span id="gpuTotal">—</span></small></div>
               <div class="stat-foot"><span class="trend up" id="gpuFootStatus">等待数据</span><span>Slurm allocation →</span></div>
             </article>
-            <article class="stat-card accent-blue clickable-card" data-view="gpu" title="点击查看具体 GPU 使用情况">
-              <div class="stat-top"><span>平均利用率</span><span class="stat-icon">◒</span></div>
+            <article class="stat-card accent-blue clickable-card" data-view="gpu" title="点击查看具体 GPU 使用情况" data-i18n-title="ov.cardGpuTitle">
+              <div class="stat-top"><span data-i18n="ov.cardGpuUtil">平均利用率</span><span class="stat-icon">◒</span></div>
               <div class="stat-value"><strong id="gpuUtil">—</strong><small>%</small></div>
               <div class="mini-chart" id="utilSpark"></div>
               <div class="stat-foot"><span class="trend up" id="utilFootStatus">等待数据</span><span>cluster load →</span></div>
             </article>
-            <article class="stat-card accent-purple clickable-card" data-view="jobs" title="点击查看完整任务队列">
-              <div class="stat-top"><span>运行中任务</span><span class="stat-icon">▤</span></div>
+            <article class="stat-card accent-purple clickable-card" data-view="jobs" title="点击查看完整任务队列" data-i18n-title="ov.cardJobsTitle">
+              <div class="stat-top"><span data-i18n="ov.cardActiveJobs">运行中任务</span><span class="stat-icon">▤</span></div>
               <div class="stat-value"><strong id="activeJobs">—</strong><small> jobs</small></div>
               <div class="stat-foot"><span class="trend neutral" id="queuedJobsFoot">— queued</span><span>gpu / interactive →</span></div>
             </article>
-            <article class="stat-card accent-orange clickable-card" data-view="storage" title="点击查看用户目录空间明细">
-              <div class="stat-top"><span>我的目录占用</span><span class="stat-icon">◉</span></div>
+            <article class="stat-card accent-orange clickable-card" data-view="storage" title="点击查看用户目录空间明细" data-i18n-title="ov.cardStorageTitle">
+              <div class="stat-top"><span data-i18n="ov.cardStorageUsed">我的目录占用</span><span class="stat-icon">◉</span></div>
               <div class="stat-value"><strong id="storageUsed">—</strong><small id="storageUnit"> GB</small></div>
               <div class="storage-track"><span id="storageTrack" style="width:0%"></span></div>
               <div class="stat-foot"><span id="storagePercent">—</span><span id="storageQuotaFoot">配额 50 GB →</span></div>
@@ -93,17 +94,17 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">COMPUTE / CLUSTER OVERVIEW</p>
-                  <h2>GPU 整体使用情况</h2>
+                  <h2 data-i18n="ov.gpuPanelTitle">GPU 整体使用情况</h2>
                 </div>
                 <div class="panel-tools">
                   <span class="small-muted" id="metricNote">未连接</span>
-                  <button class="text-button" data-view="gpu">具体单卡明细 <span>→</span></button>
+                  <button class="text-button" data-view="gpu" data-i18n-html="ov.gpuDetailBtn">具体单卡明细 <span>→</span></button>
                 </div>
               </div>
 
               <div class="gpu-stack-section">
                 <div class="gpu-stack-head">
-                  <span id="ovGpuSummaryLabel">集群算力池分配分布</span>
+                  <span id="ovGpuSummaryLabel" data-i18n="ov.gpuPoolLabel">集群算力池分配分布</span>
                   <strong id="ovGpuAllocRatio">— / — 已分配</strong>
                 </div>
                 <div class="gpu-stack-bar" id="ovGpuStackBar">
@@ -113,31 +114,31 @@
                   <span class="stack-seg restricted" style="width:0%"></span>
                 </div>
                 <div class="legend">
-                  <span><i class="legend-dot green"></i>使用中 <b id="ovLegendBusy">0</b></span>
-                  <span><i class="legend-dot gray"></i>空闲可用 <b id="ovLegendIdle">0</b></span>
-                  <span><i class="legend-dot orange"></i>维护/离线 <b id="ovLegendMaint">0</b></span>
-                  <span><i class="legend-dot purple"></i>受限专用 <b id="ovLegendRestricted">0</b></span>
+                  <span><i class="legend-dot green"></i><span data-i18n="ov.legendBusy">使用中</span> <b id="ovLegendBusy">0</b></span>
+                  <span><i class="legend-dot gray"></i><span data-i18n="ov.legendIdle">空闲可用</span> <b id="ovLegendIdle">0</b></span>
+                  <span><i class="legend-dot orange"></i><span data-i18n="ov.legendMaint">维护/离线</span> <b id="ovLegendMaint">0</b></span>
+                  <span><i class="legend-dot purple"></i><span data-i18n="ov.legendRestricted">受限专用</span> <b id="ovLegendRestricted">0</b></span>
                 </div>
               </div>
 
               <div class="overview-kpi-grid">
                 <div class="mini-kpi green">
-                  <span class="mini-kpi-label">已分配运行 (RUNNING)</span>
+                  <span class="mini-kpi-label" data-i18n="ov.kpiBusy">已分配运行 (RUNNING)</span>
                   <strong id="ovGpuBusy">—</strong>
                   <small id="ovGpuBusySub">等待数据</small>
                 </div>
                 <div class="mini-kpi blue">
-                  <span class="mini-kpi-label">空闲可调度 (AVAILABLE)</span>
+                  <span class="mini-kpi-label" data-i18n="ov.kpiIdle">空闲可调度 (AVAILABLE)</span>
                   <strong id="ovGpuIdle">—</strong>
                   <small id="ovGpuIdleSub">等待数据</small>
                 </div>
                 <div class="mini-kpi orange">
-                  <span class="mini-kpi-label">维护/排空 (DRAIN/DOWN)</span>
+                  <span class="mini-kpi-label" data-i18n="ov.kpiMaint">维护/排空 (DRAIN/DOWN)</span>
                   <strong id="ovGpuMaint">—</strong>
                   <small id="ovGpuMaintSub">等待数据</small>
                 </div>
                 <div class="mini-kpi purple">
-                  <span class="mini-kpi-label">受限专用 (ADMIN)</span>
+                  <span class="mini-kpi-label" data-i18n="ov.kpiRestricted">受限专用 (ADMIN)</span>
                   <strong id="ovGpuRestricted">—</strong>
                   <small id="ovGpuRestrictedSub">等待数据</small>
                 </div>
@@ -145,25 +146,25 @@
 
               <div class="gpu-overall-meta-grid">
                 <div class="storage-meta-card">
-                  <span class="meta-label">计算节点池健康度</span>
+                  <span class="meta-label" data-i18n="ov.metaNodeHealth">计算节点池健康度</span>
                   <strong id="ovNodesHealthy">—</strong>
                   <small id="ovNodesDetail">等待节点状态数据</small>
                 </div>
                 <div class="storage-meta-card">
-                  <span class="meta-label">主力加速卡规格</span>
+                  <span class="meta-label" data-i18n="ov.metaGpuSpecs">主力加速卡规格</span>
                   <strong id="ovGpuModels">—</strong>
                   <small id="ovGpuPartitions">Slurm 计算分区</small>
                 </div>
-                <div class="storage-meta-card clickable-card" data-view="priority" title="点击查看 Slurm 调度优先级规则与排队阶梯">
-                  <span class="meta-label">作业调度与我的优先级 →</span>
+                <div class="storage-meta-card clickable-card" data-view="priority" title="点击查看 Slurm 调度优先级规则与排队阶梯" data-i18n-title="ov.metaPrioTitle">
+                  <span class="meta-label" data-i18n="ov.metaPrioLabel">作业调度与我的优先级 →</span>
                   <strong id="ovQueueSummary">—</strong>
                   <small id="ovQueueSub">队列实时状态</small>
                 </div>
               </div>
 
               <div class="panel-foot">
-                <span>共 <b id="ovNodeCount">0</b> 个 GPU 节点 · <b id="gpuCount">0</b> 张加速卡</span>
-                <button class="text-button" data-view="gpu">查看全部 GPU 节点与单卡状态 <span>→</span></button>
+                <span><span data-i18n="ov.footTotalPrefix">共</span> <b id="ovNodeCount">0</b> <span data-i18n="ov.footNodesMid">个 GPU 节点 ·</span> <b id="gpuCount">0</b> <span data-i18n="ov.footGpusSuffix">张加速卡</span></span>
+                <button class="text-button" data-view="gpu" data-i18n-html="ov.viewAllGpuBtn">查看全部 GPU 节点与单卡状态 <span>→</span></button>
               </div>
             </article>
 
@@ -172,9 +173,9 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">SSH USER / HOME STORAGE OVERVIEW</p>
-                  <h2>用户目录空间概览</h2>
+                  <h2 data-i18n="ov.stPanelTitle">用户目录空间概览</h2>
                 </div>
-                <button class="text-button" data-view="storage">子目录明细 <span>→</span></button>
+                <button class="text-button" data-view="storage" data-i18n-html="ov.stSubdirBtn">子目录明细 <span>→</span></button>
               </div>
 
               <div class="storage-total">
@@ -193,7 +194,7 @@
 
               <div class="overview-storage-bar-wrap">
                 <div class="gpu-stack-head">
-                  <span>个人配额整体占用进度</span>
+                  <span data-i18n="ov.stQuotaProgress">个人配额整体占用进度</span>
                   <strong id="ovStorageQuotaRatio">— / 50 GB</strong>
                 </div>
                 <div class="quota-progress-bar">
@@ -203,22 +204,22 @@
 
               <div class="storage-summary-cards">
                 <div class="storage-meta-card">
-                  <span class="meta-label">剩余可用配额</span>
+                  <span class="meta-label" data-i18n="ov.stMetaAvail">剩余可用配额</span>
                   <strong id="ovStorageAvail">—</strong>
                   <small id="ovStorageAvailSub">配额上限 50 GB</small>
                 </div>
                 <div class="storage-meta-card">
-                  <span class="meta-label">最大占用目录</span>
+                  <span class="meta-label" data-i18n="ov.stMetaTopDir">最大占用目录</span>
                   <strong id="ovStorageTopDir">—</strong>
                   <small id="ovStorageTopDirSub">等待目录统计</small>
                 </div>
                 <div class="storage-meta-card">
-                  <span class="meta-label">SSH 主目录路径</span>
+                  <span class="meta-label" data-i18n="ov.stMetaHomePath">SSH 主目录路径</span>
                   <strong id="ovStorageHomePath">—</strong>
                   <small id="ovStorageUserLabel">未连接</small>
                 </div>
                 <div class="storage-meta-card">
-                  <span class="meta-label">底层文件系统总量</span>
+                  <span class="meta-label" data-i18n="ov.stMetaFsTotal">底层文件系统总量</span>
                   <strong id="ovStorageFsSummary">—</strong>
                   <small id="ovStorageMountLabel">挂载卷状态</small>
                 </div>
@@ -226,7 +227,7 @@
 
               <div class="panel-foot">
                 <span id="storageHomeFoot">主目录 <b>—</b></span>
-                <button class="text-button" data-view="storage">查看各子目录空间占用排行 <span>→</span></button>
+                <button class="text-button" data-view="storage" data-i18n-html="ov.viewAllStBtn">查看各子目录空间占用排行 <span>→</span></button>
               </div>
             </article>
           </section>
@@ -236,24 +237,24 @@
         <div class="view-page" id="viewGpu" data-page="gpu">
           <section class="stats-grid subpage-stats">
             <article class="stat-card accent-green">
-              <div class="stat-top"><span>可用在线 GPU</span><span class="stat-icon">⌁</span></div>
-              <div class="stat-value"><strong id="gpuPageOnline">—</strong><small>/ <span id="gpuPageTotal">—</span> 张</small></div>
-              <div class="stat-foot"><span class="trend up" id="gpuPageNodeFoot">— 个计算节点</span><span>集群总卡数</span></div>
+              <div class="stat-top"><span data-i18n="gpu.cardOnline">可用在线 GPU</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-value"><strong id="gpuPageOnline">—</strong><small>/ <span id="gpuPageTotal">—</span> <span data-i18n="gpu.unitCards">张</span></small></div>
+              <div class="stat-foot"><span class="trend up" id="gpuPageNodeFoot">— 个计算节点</span><span data-i18n="gpu.footTotalCards">集群总卡数</span></div>
             </article>
             <article class="stat-card accent-blue">
-              <div class="stat-top"><span>已分配使用中</span><span class="stat-icon">◒</span></div>
-              <div class="stat-value"><strong id="gpuPageBusy">—</strong><small>张 (<span id="gpuPageUtil">—</span>%)</small></div>
-              <div class="stat-foot"><span class="trend up" id="gpuPageBusyFoot">Slurm RUNNING</span><span>实时分配</span></div>
+              <div class="stat-top"><span data-i18n="gpu.cardBusy">已分配使用中</span><span class="stat-icon">◒</span></div>
+              <div class="stat-value"><strong id="gpuPageBusy">—</strong><small><span data-i18n="gpu.unitCards">张</span> (<span id="gpuPageUtil">—</span>%)</small></div>
+              <div class="stat-foot"><span class="trend up" id="gpuPageBusyFoot">Slurm RUNNING</span><span data-i18n="gpu.footLiveAlloc">实时分配</span></div>
             </article>
             <article class="stat-card accent-purple">
-              <div class="stat-top"><span>当前空闲可调度</span><span class="stat-icon">✦</span></div>
-              <div class="stat-value"><strong id="gpuPageIdle">—</strong><small>张</small></div>
-              <div class="stat-foot"><span class="trend neutral" id="gpuPageIdleFoot">AVAILABLE</span><span>可立即申请</span></div>
+              <div class="stat-top"><span data-i18n="gpu.cardIdle">当前空闲可调度</span><span class="stat-icon">✦</span></div>
+              <div class="stat-value"><strong id="gpuPageIdle">—</strong><small data-i18n="gpu.unitCards">张</small></div>
+              <div class="stat-foot"><span class="trend neutral" id="gpuPageIdleFoot">AVAILABLE</span><span data-i18n="gpu.footReady">可立即申请</span></div>
             </article>
             <article class="stat-card accent-orange">
-              <div class="stat-top"><span>维护 / 受限专用</span><span class="stat-icon">⚠</span></div>
-              <div class="stat-value"><strong id="gpuPageUnavail">—</strong><small>张</small></div>
-              <div class="stat-foot"><span class="trend warn" id="gpuPageUnavailFoot">DRAIN / ADMIN</span><span>不可常规调度</span></div>
+              <div class="stat-top"><span data-i18n="gpu.cardUnavail">维护 / 受限专用</span><span class="stat-icon">⚠</span></div>
+              <div class="stat-value"><strong id="gpuPageUnavail">—</strong><small data-i18n="gpu.unitCards">张</small></div>
+              <div class="stat-foot"><span class="trend warn" id="gpuPageUnavailFoot">DRAIN / ADMIN</span><span data-i18n="gpu.footUnsched">不可常规调度</span></div>
             </article>
           </section>
 
@@ -261,11 +262,11 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">COMPUTE NODES / FILTER BY NODE</p>
-                <h2>计算节点状态明细</h2>
+                <h2 data-i18n="gpu.nodesPanelTitle">计算节点状态明细</h2>
               </div>
               <div class="panel-tools">
-                <span class="small-muted">点击任意节点卡片可筛选下方具体 GPU</span>
-                <button class="btn-chip selected" id="clearNodeFilterBtn" type="button">显示全部节点</button>
+                <span class="small-muted" data-i18n="gpu.nodesFilterHint">点击任意节点卡片可筛选下方具体 GPU</span>
+                <button class="btn-chip selected" id="clearNodeFilterBtn" type="button" data-i18n="gpu.showAllNodes">显示全部节点</button>
               </div>
             </div>
             <div class="node-detail-grid" id="gpuPageNodeGrid"></div>
@@ -275,30 +276,30 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">COMPUTE / PER-GPU ALLOCATION DETAILS</p>
-                <h2>具体 GPU 使用情况 <small class="filter-tag" id="gpuActiveNodeTag"></small></h2>
+                <h2><span data-i18n="gpu.detailPanelTitle">具体 GPU 使用情况</span> <small class="filter-tag" id="gpuActiveNodeTag"></small></h2>
               </div>
               <div class="panel-tools">
                 <div class="segmented" id="gpuFilter">
-                  <button class="selected" data-filter="all">全部</button>
-                  <button data-filter="busy">使用中</button>
-                  <button data-filter="idle">空闲</button>
-                  <button data-filter="maintenance">维护/受限</button>
+                  <button class="selected" data-filter="all" data-i18n="gpu.filterAll">全部</button>
+                  <button data-filter="busy" data-i18n="gpu.filterBusy">使用中</button>
+                  <button data-filter="idle" data-i18n="gpu.filterIdle">空闲</button>
+                  <button data-filter="maintenance" data-i18n="gpu.filterMaint">维护/受限</button>
                 </div>
               </div>
             </div>
             <div class="gpu-summary">
               <div class="legend">
-                <span><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span>
-                <span><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span>
-                <span><i class="legend-dot purple"></i>受限专用 <b>ADMIN</b></span>
-                <span><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span>
+                <span data-i18n-html="gpu.legendRunning"><i class="legend-dot green"></i>已分配 <b>RUNNING</b></span>
+                <span data-i18n-html="gpu.legendDrain"><i class="legend-dot orange"></i>维护/排空 <b>DRAIN / DOWN</b></span>
+                <span data-i18n-html="gpu.legendAdmin"><i class="legend-dot purple"></i>受限专用 <b>ADMIN</b></span>
+                <span data-i18n-html="gpu.legendIdle"><i class="legend-dot gray"></i>空闲 <b>AVAILABLE</b></span>
               </div>
               <span class="small-muted" id="gpuPageMetricNote">Slurm GPU allocation</span>
             </div>
             <div class="gpu-grid" id="gpuGrid"></div>
             <div class="panel-foot">
-              <span>当前显示 <b id="gpuShown">0</b> / <b id="gpuCountDetail">0</b> 张 GPU</span>
-              <button class="text-button" data-view="overview"><span>←</span> 返回总览首页</button>
+              <span><span data-i18n="gpu.showingPrefix">当前显示</span> <b id="gpuShown">0</b> / <b id="gpuCountDetail">0</b> <span data-i18n="gpu.showingSuffix">张 GPU</span></span>
+              <button class="text-button" data-view="overview" data-i18n-html="common.backToOverview"><span>←</span> 返回总览首页</button>
             </div>
           </article>
         </div>
@@ -307,24 +308,24 @@
         <div class="view-page" id="viewStorage" data-page="storage">
           <section class="stats-grid subpage-stats">
             <article class="stat-card accent-orange">
-              <div class="stat-top"><span>主目录已用空间</span><span class="stat-icon">◉</span></div>
+              <div class="stat-top"><span data-i18n="st.cardUsed">主目录已用空间</span><span class="stat-icon">◉</span></div>
               <div class="stat-value"><strong id="stPageUsed">—</strong><small id="stPageUsedUnit"> GB</small></div>
-              <div class="stat-foot"><span class="trend warn" id="stPageUsedPct">占配额 —%</span><span>个人目录已用</span></div>
+              <div class="stat-foot"><span class="trend warn" id="stPageUsedPct">占配额 —%</span><span data-i18n="st.footPersonalUsed">个人目录已用</span></div>
             </article>
             <article class="stat-card accent-green">
-              <div class="stat-top"><span>剩余可用配额</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-top"><span data-i18n="st.cardAvail">剩余可用配额</span><span class="stat-icon">⌁</span></div>
               <div class="stat-value"><strong id="stPageAvail">—</strong><small id="stPageAvailUnit"> GB</small></div>
-              <div class="stat-foot"><span class="trend up">配额上限 50 GB</span><span>个人主目录配额</span></div>
+              <div class="stat-foot"><span class="trend up" data-i18n="st.footQuotaCap">配额上限 50 GB</span><span data-i18n="st.footPersonalQuota">个人主目录配额</span></div>
             </article>
             <article class="stat-card accent-purple">
-              <div class="stat-top"><span>最大单目录占用</span><span class="stat-icon">▤</span></div>
+              <div class="stat-top"><span data-i18n="st.cardTopDir">最大单目录占用</span><span class="stat-icon">▤</span></div>
               <div class="stat-value"><strong id="stPageTopSize">—</strong><small id="stPageTopUnit"></small></div>
               <div class="stat-foot"><span class="trend neutral" id="stPageTopName">—</span><span id="stPageDirCount">共 0 个子目录</span></div>
             </article>
             <article class="stat-card accent-blue">
-              <div class="stat-top"><span>底层存储卷 (df)</span><span class="stat-icon">◒</span></div>
+              <div class="stat-top"><span data-i18n="st.cardFs">底层存储卷 (df)</span><span class="stat-icon">◒</span></div>
               <div class="stat-value"><strong id="stPageFsUsed">—</strong><small id="stPageFsTotal">/ — TB</small></div>
-              <div class="stat-foot"><span id="stPageMount">挂载点 —</span><span>共享文件系统</span></div>
+              <div class="stat-foot"><span id="stPageMount">挂载点 —</span><span data-i18n="st.footSharedFs">共享文件系统</span></div>
             </article>
           </section>
 
@@ -333,9 +334,9 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">SSH USER / QUOTA DISTRIBUTION</p>
-                  <h2>目录配额占比分布</h2>
+                  <h2 data-i18n="st.distPanelTitle">目录配额占比分布</h2>
                 </div>
-                <button class="btn-chip" id="rescanStorageBtn" type="button" title="重新扫描目录大小">↻ 重新扫描</button>
+                <button class="btn-chip" id="rescanStorageBtn" type="button" title="重新扫描目录大小" data-i18n-title="st.rescanTitle" data-i18n="st.rescanBtn">↻ 重新扫描</button>
               </div>
               <div class="storage-total">
                 <div class="donut" id="storageDetailDonut">
@@ -353,7 +354,7 @@
               <div class="storage-paths" id="storagePaths"></div>
               <div class="panel-foot">
                 <span id="storageDetailFoot">主目录 <b>—</b></span>
-                <button class="text-button" data-view="overview"><span>←</span> 返回总览首页</button>
+                <button class="text-button" data-view="overview" data-i18n-html="common.backToOverview"><span>←</span> 返回总览首页</button>
               </div>
             </article>
 
@@ -361,14 +362,14 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">HOME DIRECTORY / TOP SUBDIRS</p>
-                  <h2>主目录空间明细 (Top 10)</h2>
+                  <h2 data-i18n="st.topSubdirsTitle">主目录空间明细 (Top 10)</h2>
                 </div>
-                <span class="small-muted" id="subdirsScanNote">按实际占用大小排序</span>
+                <span class="small-muted" id="subdirsScanNote" data-i18n="st.sortBySizeNote">按实际占用大小排序</span>
               </div>
               <div id="usersList"></div>
               <div class="panel-foot">
-                <span class="small-muted">统计范围：一级子目录与隐藏目录 (如 .conda / .cache)</span>
-                <span class="small-muted">配额基准 <b>50 GB</b></span>
+                <span class="small-muted" data-i18n="st.scanScopeNote">统计范围：一级子目录与隐藏目录 (如 .conda / .cache)</span>
+                <span class="small-muted" data-i18n-html="st.quotaBaseNote">配额基准 <b>50 GB</b></span>
               </div>
             </article>
           </section>
@@ -378,22 +379,22 @@
         <div class="view-page" id="viewJobs" data-page="jobs">
           <section class="stats-grid subpage-stats">
             <article class="stat-card accent-purple">
-              <div class="stat-top"><span>队列总任务数</span><span class="stat-icon">≡</span></div>
+              <div class="stat-top"><span data-i18n="jobs.cardTotal">队列总任务数</span><span class="stat-icon">≡</span></div>
               <div class="stat-value"><strong id="jobPageTotal">—</strong><small> jobs</small></div>
-              <div class="stat-foot"><span class="trend neutral">gpu / interactive</span><span>Slurm 队列</span></div>
+              <div class="stat-foot"><span class="trend neutral">gpu / interactive</span><span data-i18n="jobs.footSlurmQueue">Slurm 队列</span></div>
             </article>
             <article class="stat-card accent-green">
-              <div class="stat-top"><span>运行中 (RUNNING)</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-top"><span data-i18n="jobs.cardRunning">运行中 (RUNNING)</span><span class="stat-icon">⌁</span></div>
               <div class="stat-value"><strong id="jobPageRunning">—</strong><small> jobs</small></div>
-              <div class="stat-foot"><span class="trend up" id="jobPageGpuUsed">占用 — 张 GPU</span><span>正在执行</span></div>
+              <div class="stat-foot"><span class="trend up" id="jobPageGpuUsed">占用 — 张 GPU</span><span data-i18n="jobs.footExecuting">正在执行</span></div>
             </article>
             <article class="stat-card accent-orange">
-              <div class="stat-top"><span>排队中 (PENDING)</span><span class="stat-icon">◒</span></div>
+              <div class="stat-top"><span data-i18n="jobs.cardPending">排队中 (PENDING)</span><span class="stat-icon">◒</span></div>
               <div class="stat-value"><strong id="jobPagePending">—</strong><small> jobs</small></div>
-              <div class="stat-foot"><span class="trend warn">等待资源或优先级</span><span>排队等待</span></div>
+              <div class="stat-foot"><span class="trend warn" data-i18n="jobs.footWaitReason">等待资源或优先级</span><span data-i18n="jobs.footQueued">排队等待</span></div>
             </article>
             <article class="stat-card accent-blue">
-              <div class="stat-top"><span>我的 / 同组任务</span><span class="stat-icon">✦</span></div>
+              <div class="stat-top"><span data-i18n="jobs.cardMineGroup">我的 / 同组任务</span><span class="stat-icon">✦</span></div>
               <div class="stat-value"><strong id="jobPageMine">—</strong><small id="jobPageGroupTotal"> / 同组 —</small></div>
               <div class="stat-foot"><span id="jobPageMineUser">当前 SSH 用户</span><span id="jobPageGroupFoot">同组他人 —</span></div>
             </article>
@@ -403,13 +404,13 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">RESEARCH GROUP / TEAMMATES &amp; SHARED FAIRSHARE</p>
-                <h2>同组人员实验任务与份额明细 <small class="filter-tag" id="jobGroupAcctTag"></small></h2>
+                <h2><span data-i18n="jobs.groupPanelTitle">同组人员实验任务与份额明细</span> <small class="filter-tag" id="jobGroupAcctTag"></small></h2>
               </div>
               <div class="panel-tools">
-                <span class="small-muted">同组成员共享课题组 FairShare · 点击成员卡片可筛选下方队列</span>
-                <button class="btn-chip" id="filterGroupAllChip" type="button" data-quick-job-filter="group">同组全部</button>
-                <button class="btn-chip" id="filterTeammatesChip" type="button" data-quick-job-filter="teammates">仅同组他人</button>
-                <button class="btn-chip selected" id="clearMemberFilterBtn" type="button">显示全集群</button>
+                <span class="small-muted" data-i18n="jobs.groupShareNote">同组成员共享课题组 FairShare · 点击成员卡片可筛选下方队列</span>
+                <button class="btn-chip" id="filterGroupAllChip" type="button" data-quick-job-filter="group" data-i18n="jobs.chipGroupAll">同组全部</button>
+                <button class="btn-chip" id="filterTeammatesChip" type="button" data-quick-job-filter="teammates" data-i18n="jobs.chipTeammates">仅同组他人</button>
+                <button class="btn-chip selected" id="clearMemberFilterBtn" type="button" data-i18n="jobs.chipClusterAll">显示全集群</button>
               </div>
             </div>
             <div class="node-detail-grid group-members-grid" id="groupMembersGrid"></div>
@@ -419,32 +420,41 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">SCHEDULER / SLURM QUEUE</p>
-                <h2>全部任务队列 <small class="filter-tag" id="jobActiveMemberTag"></small></h2>
+                <h2><span data-i18n="jobs.allQueueTitle">全部任务队列</span> <small class="filter-tag" id="jobActiveMemberTag"></small></h2>
               </div>
               <div class="panel-tools">
-                <button class="btn-chip" type="button" data-view="priority">⇵ 优先级规则与排队阶梯 →</button>
-                <input type="search" id="jobSearchInput" class="search-input" placeholder="搜索任务名 / 用户 / 账户 / 节点…" />
+                <button class="btn-chip" type="button" data-view="priority" data-i18n="jobs.gotoPrioBtn">⇵ 优先级规则与排队阶梯 →</button>
+                <input type="search" id="jobSearchInput" class="search-input" placeholder="搜索任务名 / 用户 / 账户 / 节点…" data-i18n-placeholder="jobs.searchPlaceholder" />
                 <div class="segmented" id="jobFilter">
-                  <button class="selected" data-job-filter="all">全部</button>
-                  <button data-job-filter="RUNNING">运行中</button>
-                  <button data-job-filter="PENDING">排队中</button>
-                  <button data-job-filter="group">同组全部</button>
-                  <button data-job-filter="teammates">同组他人</button>
-                  <button data-job-filter="mine">我的任务</button>
+                  <button class="selected" data-job-filter="all" data-i18n="jobs.filterAll">全部</button>
+                  <button data-job-filter="RUNNING" data-i18n="jobs.filterRunning">运行中</button>
+                  <button data-job-filter="PENDING" data-i18n="jobs.filterPending">排队中</button>
+                  <button data-job-filter="group" data-i18n="jobs.filterGroup">同组全部</button>
+                  <button data-job-filter="teammates" data-i18n="jobs.filterTeammates">同组他人</button>
+                  <button data-job-filter="mine" data-i18n="jobs.filterMine">我的任务</button>
                 </div>
               </div>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr><th>任务</th><th>用户 / 账户</th><th>分区</th><th>节点</th><th>GPU</th><th>优先级 (FairShare+Part+Age)</th><th>运行 / 时限</th><th>状态</th></tr>
+                  <tr>
+                    <th data-i18n="jobs.thJob">任务</th>
+                    <th data-i18n="jobs.thOwner">用户 / 账户</th>
+                    <th data-i18n="jobs.thPart">分区</th>
+                    <th data-i18n="jobs.thNode">节点</th>
+                    <th data-i18n="jobs.thGpu">GPU</th>
+                    <th data-i18n="jobs.thPrio">优先级 (FairShare+Part+Age)</th>
+                    <th data-i18n="jobs.thTime">运行 / 时限</th>
+                    <th data-i18n="jobs.thStatus">状态</th>
+                  </tr>
                 </thead>
                 <tbody id="jobsTable"></tbody>
               </table>
             </div>
             <div class="panel-foot">
-              <span>显示 <b id="jobsShownCount">0</b> / <b id="jobsTotalCount">0</b> 个任务</span>
-              <button class="text-button" data-view="overview"><span>←</span> 返回总览首页</button>
+              <span><span data-i18n="jobs.showingPrefix">显示</span> <b id="jobsShownCount">0</b> / <b id="jobsTotalCount">0</b> <span data-i18n="jobs.showingSuffix">个任务</span></span>
+              <button class="text-button" data-view="overview" data-i18n-html="common.backToOverview"><span>←</span> 返回总览首页</button>
             </div>
           </article>
         </div>
@@ -453,23 +463,23 @@
         <div class="view-page" id="viewPriority" data-page="priority">
           <section class="stats-grid subpage-stats">
             <article class="stat-card accent-purple">
-              <div class="stat-top"><span>我的当前任务优先级</span><span class="stat-icon">⇵</span></div>
+              <div class="stat-top"><span data-i18n="prio.cardMine">我的当前任务优先级</span><span class="stat-icon">⇵</span></div>
               <div class="stat-value"><strong id="prioCardMine">—</strong><small id="prioCardMineUnit"> pts</small></div>
               <div class="stat-foot"><span class="trend neutral" id="prioCardMineBreakdown">等待数据</span><span id="prioCardMineAcct">关联账户 —</span></div>
             </article>
             <article class="stat-card accent-green">
-              <div class="stat-top"><span>我的可调度顺位</span><span class="stat-icon">⌁</span></div>
+              <div class="stat-top"><span data-i18n="prio.cardRank">我的可调度顺位</span><span class="stat-icon">⌁</span></div>
               <div class="stat-value"><strong id="prioCardRank">—</strong><small id="prioCardRankSub"></small></div>
               <div class="stat-foot"><span class="trend up" id="prioCardAheadGpus">前序竞争 —</span><span id="prioCardMinePending">排队 —</span></div>
             </article>
             <article class="stat-card accent-blue">
-              <div class="stat-top"><span>FairShare 核心权重</span><span class="stat-icon">◒</span></div>
+              <div class="stat-top"><span data-i18n="prio.cardFsWeight">FairShare 核心权重</span><span class="stat-icon">◒</span></div>
               <div class="stat-value"><strong id="prioCardFsWeight">50,000</strong><small id="prioCardFsMax">/ ku 上限 3,125分</small></div>
-              <div class="stat-foot"><span class="trend up" id="prioCardHalfLife">半衰期 7 天衰减</span><span>NO_FAIR_TREE 算法</span></div>
+              <div class="stat-foot"><span class="trend up" id="prioCardHalfLife">半衰期 7 天衰减</span><span data-i18n="prio.footNoFairTree">NO_FAIR_TREE 算法</span></div>
             </article>
             <article class="stat-card accent-orange">
-              <div class="stat-top"><span>排队时长加成 (Age)</span><span class="stat-icon">✦</span></div>
-              <div class="stat-value"><strong id="prioCardAgeRate">+5.95</strong><small> 分/小时</small></div>
+              <div class="stat-top"><span data-i18n="prio.cardAge">排队时长加成 (Age)</span><span class="stat-icon">✦</span></div>
+              <div class="stat-value"><strong id="prioCardAgeRate">+5.95</strong><small data-i18n="prio.unitPtsPerHour"> 分/小时</small></div>
               <div class="stat-foot"><span class="trend warn" id="prioCardAgeCap">7 天满额 1,000 分</span><span id="prioCardSchedMode">sched/backfill</span></div>
             </article>
           </section>
@@ -480,61 +490,61 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">SLURM MULTIFACTOR PRIORITY / FORMULA &amp; RULES</p>
-                  <h2>远端 HPC 优先级计算规则透视</h2>
+                  <h2 data-i18n="prio.rulesPanelTitle">远端 HPC 优先级计算规则透视</h2>
                 </div>
                 <span class="node-badge online" id="prioPluginBadge">priority/multifactor</span>
               </div>
 
               <div class="formula-box">
                 <div class="formula-head">
-                  <span>Slurm 实时多因子优先级合成公式 (每 5 分钟重算)</span>
-                  <strong id="prioFormulaMaxNote">ku 课题组理论最高 5,125 分</strong>
+                  <span data-i18n="prio.formulaHead">Slurm 实时多因子优先级合成公式 (每 5 分钟重算)</span>
+                  <strong id="prioFormulaMaxNote" data-i18n="prio.formulaMaxNote">ku 课题组理论最高 5,125 分</strong>
                 </div>
                 <div class="formula-equation">
                   <div class="formula-term total">
-                    <small>总优先级</small>
+                    <small data-i18n="prio.termTotal">总优先级</small>
                     <strong>Priority</strong>
                   </div>
                   <span class="formula-op">=</span>
                   <div class="formula-term fs">
-                    <small>公平份额 (主导 96%)</small>
+                    <small data-i18n="prio.termFs">公平份额 (主导 96%)</small>
                     <strong>50,000 × FairShare</strong>
-                    <em>ku 范围: 0 ~ 3,125 分</em>
+                    <em data-i18n="prio.termFsSub">ku 范围: 0 ~ 3,125 分</em>
                   </div>
                   <span class="formula-op">+</span>
                   <div class="formula-term part">
-                    <small>分区基础分</small>
+                    <small data-i18n="prio.termPart">分区基础分</small>
                     <strong>1,000 × Partition</strong>
-                    <em>gpu/prod 固定 1,000 分</em>
+                    <em data-i18n="prio.termPartSub">gpu/prod 固定 1,000 分</em>
                   </div>
                   <span class="formula-op">+</span>
                   <div class="formula-term age">
-                    <small>排队等待分</small>
+                    <small data-i18n="prio.termAge">排队等待分</small>
                     <strong>1,000 × Age</strong>
-                    <em>+5.95分/h (上限 1,000 分)</em>
+                    <em data-i18n="prio.termAgeSub">+5.95分/h (上限 1,000 分)</em>
                   </div>
                 </div>
                 <div class="formula-zero-note">
-                  <span>已禁用因子 (权重为 0)：<b>JobSize = 0</b> (不按申请卡数加减分) · <b>QOS = 0</b> · <b>Assoc = 0</b> · <b>TRES = 0</b></span>
+                  <span data-i18n-html="prio.formulaZeroNote">已禁用因子 (权重为 0)：<b>JobSize = 0</b> (不按申请卡数加减分) · <b>QOS = 0</b> · <b>Assoc = 0</b> · <b>TRES = 0</b></span>
                 </div>
               </div>
 
               <div class="rules-explain-grid">
                 <div class="rule-card purple">
-                  <div class="rule-card-title"><span>01 · FairShare 公平份额与 7 天半衰期</span><b>最高 3,125 分</b></div>
-                  <p>采用经典指数衰减公式 <code>F = 2^(-EffectvUsage / NormShares)</code>。在 <code>ku</code> 根份额 (<code>0.25</code>) 下，零消耗账户初始为 <code>0.0625 × 50000 = 3125</code> 分。课题组近期跑卡越多，<code>EffectvUsage</code> 越高，FairShare 越接近 0；停止使用后按 <b>7 天半衰期</b>自动回血。</p>
+                  <div class="rule-card-title"><span data-i18n="prio.rule1Title">01 · FairShare 公平份额与 7 天半衰期</span><b data-i18n="prio.rule1Badge">最高 3,125 分</b></div>
+                  <p data-i18n-html="prio.rule1Desc">采用经典指数衰减公式 <code>F = 2^(-EffectvUsage / NormShares)</code>。在 <code>ku</code> 根份额 (<code>0.25</code>) 下，零消耗账户初始为 <code>0.0625 × 50000 = 3125</code> 分。课题组近期跑卡越多，<code>EffectvUsage</code> 越高，FairShare 越接近 0；停止使用后按 <b>7 天半衰期</b>自动回血。</p>
                 </div>
                 <div class="rule-card orange">
-                  <div class="rule-card-title"><span>02 · Age 排队时长线性补偿</span><b>+142.9 分/天</b></div>
-                  <p>合格排队任务每等待 1 小时增加约 <b>5.95 分</b>，满 <b>7 天 (168h)</b> 达到封顶 <b>1,000 分</b>。注意：处于 <code>Dependency</code> (前置依赖) 或 <code>JobHeldUser</code> 状态的任务不参与立即调度。</p>
+                  <div class="rule-card-title"><span data-i18n="prio.rule2Title">02 · Age 排队时长线性补偿</span><b data-i18n="prio.rule2Badge">+142.9 分/天</b></div>
+                  <p data-i18n-html="prio.rule2Desc">合格排队任务每等待 1 小时增加约 <b>5.95 分</b>，满 <b>7 天 (168h)</b> 达到封顶 <b>1,000 分</b>。注意：处于 <code>Dependency</code> (前置依赖) 或 <code>JobHeldUser</code> 状态的任务不参与立即调度。</p>
                 </div>
                 <div class="rule-card blue">
-                  <div class="rule-card-title"><span>03 · 课题组共享份额 (Share=parent)</span><b>同组同分</b></div>
-                  <p>集群账户下个人 <code>RawShares=parent</code>，即同一课题组账户 (如 <code>kuex0095</code>) 内所有成员<b>共享该课题组的历史总消耗与 FairShare 分数</b>。若拥有多个关联账户，选择低消耗账户提交可大幅提升初始优先级。</p>
+                  <div class="rule-card-title"><span data-i18n="prio.rule3Title">03 · 课题组共享份额 (Share=parent)</span><b data-i18n="prio.rule3Badge">同组同分</b></div>
+                  <p data-i18n-html="prio.rule3Desc">集群账户下个人 <code>RawShares=parent</code>，即同一课题组账户 (如 <code>kuex0095</code>) 内所有成员<b>共享该课题组的历史总消耗与 FairShare 分数</b>。若拥有多个关联账户，选择低消耗账户提交可大幅提升初始优先级。</p>
                 </div>
                 <div class="rule-card green">
-                  <div class="rule-card-title"><span>04 · Backfill 回填插空与无抢占机制</span><b>sched/backfill</b></div>
-                  <p><code>PreemptMode=OFF</code> 意味着运行中任务绝不会被高优任务强行中断（<code>gpu</code> 分区最长 3 天）。当排第一的大任务正在等待凑齐多张 GPU 时，申请<b>较少卡数</b>或声明<b>较短 <code>--time</code> 时限</b>的低优任务可触发 Backfill 提前插空运行。</p>
+                  <div class="rule-card-title"><span data-i18n="prio.rule4Title">04 · Backfill 回填插空与无抢占机制</span><b>sched/backfill</b></div>
+                  <p data-i18n-html="prio.rule4Desc"><code>PreemptMode=OFF</code> 意味着运行中任务绝不会被高优任务强行中断（<code>gpu</code> 分区最长 3 天）。当排第一的大任务正在等待凑齐多张 GPU 时，申请<b>较少卡数</b>或声明<b>较短 <code>--time</code> 时限</b>的低优任务可触发 Backfill 提前插空运行。</p>
                 </div>
               </div>
             </article>
@@ -544,35 +554,35 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">MY ACCOUNTS &amp; WHAT-IF SIMULATOR</p>
-                  <h2>我的账户优先级对比与推演</h2>
+                  <h2 data-i18n="prio.simPanelTitle">我的账户优先级对比与推演</h2>
                 </div>
                 <span class="small-muted" id="prioSimUserTag">SSH User</span>
               </div>
 
               <div class="my-accounts-section">
                 <div class="sub-section-head">
-                  <span>当前用户可用 Slurm 账户对比 (来自 <code>sshare</code>)</span>
-                  <small id="myAccountsHint">点击账户可带入下方模拟器</small>
+                  <span data-i18n-html="prio.myAcctsSub">当前用户可用 Slurm 账户对比 (来自 <code>sshare</code>)</span>
+                  <small id="myAccountsHint" data-i18n="prio.myAcctsHint">点击账户可带入下方模拟器</small>
                 </div>
                 <div class="my-accounts-grid" id="myAccountsList"></div>
               </div>
 
               <div class="simulator-box">
                 <div class="sub-section-head">
-                  <span>交互式优先级与插队推演器</span>
+                  <span data-i18n="prio.simTitle">交互式优先级与插队推演器</span>
                   <strong id="simResultTotal">预计总分: —</strong>
                 </div>
                 <div class="sim-controls">
                   <label class="sim-slider-row">
                     <div class="sim-slider-label">
-                      <span>账户 FairShare 得分 (<code>0 ~ 3,125</code>)</span>
+                      <span data-i18n-html="prio.simFsSliderLabel">账户 FairShare 得分 (<code>0 ~ 3,125</code>)</span>
                       <strong id="simFsValLabel">1,028 分</strong>
                     </div>
                     <input type="range" id="simFsSlider" min="0" max="3125" step="1" value="1028" />
                   </label>
                   <label class="sim-slider-row">
                     <div class="sim-slider-label">
-                      <span>已排队等待时长 (<code>0 ~ 168 小时 / 7天</code>)</span>
+                      <span data-i18n-html="prio.simAgeSliderLabel">已排队等待时长 (<code>0 ~ 168 小时 / 7天</code>)</span>
                       <strong id="simAgeValLabel">0 小时 (+0 分)</strong>
                     </div>
                     <input type="range" id="simAgeSlider" min="0" max="168" step="1" value="0" />
@@ -580,17 +590,17 @@
                 </div>
                 <div class="sim-outcome-grid">
                   <div class="sim-outcome-card">
-                    <span>模拟可调度顺位</span>
+                    <span data-i18n="prio.simOutRank">模拟可调度顺位</span>
                     <strong id="simRankResult">—</strong>
                     <small id="simRankSub">在当前可调度队列中的位置</small>
                   </div>
                   <div class="sim-outcome-card">
-                    <span>前序竞争 GPU 数量</span>
+                    <span data-i18n="prio.simOutAhead">前序竞争 GPU 数量</span>
                     <strong id="simAheadGpusResult">—</strong>
                     <small id="simAheadSub">优先级高于此分数的待分配卡数</small>
                   </div>
                   <div class="sim-outcome-card">
-                    <span>超越前一名所需等待</span>
+                    <span data-i18n="prio.simOutOvertake">超越前一名所需等待</span>
                     <strong id="simOvertakeResult">—</strong>
                     <small id="simOvertakeSub">按 +5.95 分/小时差值推算</small>
                   </div>
@@ -604,27 +614,27 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">LIVE QUEUE PRIORITY LADDER / SPRIO BREAKDOWN</p>
-                <h2>实时排队任务优先级阶梯图</h2>
+                <h2 data-i18n="prio.ladderPanelTitle">实时排队任务优先级阶梯图</h2>
               </div>
               <div class="panel-tools">
                 <div class="segmented" id="prioLadderFilter">
-                  <button class="selected" data-ladder-filter="all">全部排队批次</button>
-                  <button data-ladder-filter="eligible">仅可立即调度 (Eligible)</button>
-                  <button data-ladder-filter="group">同组排队任务</button>
-                  <button data-ladder-filter="mine">我的排队任务</button>
+                  <button class="selected" data-ladder-filter="all" data-i18n="prio.ladderAll">全部排队批次</button>
+                  <button data-ladder-filter="eligible" data-i18n="prio.ladderEligible">仅可立即调度 (Eligible)</button>
+                  <button data-ladder-filter="group" data-i18n="prio.ladderGroup">同组排队任务</button>
+                  <button data-ladder-filter="mine" data-i18n="prio.ladderMine">我的排队任务</button>
                 </div>
                 <div class="segmented" id="prioLadderMode">
-                  <button class="selected" data-ladder-mode="groups">按批次聚合</button>
-                  <button data-ladder-mode="jobs">逐个任务展开</button>
+                  <button class="selected" data-ladder-mode="groups" data-i18n="prio.modeGroups">按批次聚合</button>
+                  <button data-ladder-mode="jobs" data-i18n="prio.modeJobs">逐个任务展开</button>
                 </div>
               </div>
             </div>
             <div class="gpu-summary">
               <div class="legend">
-                <span><i class="legend-dot purple"></i><b>FairShare</b> 公平份额分 (权重 50,000)</span>
-                <span><i class="legend-dot blue"></i><b>Partition</b> 分区基础分 (固定 1,000)</span>
-                <span><i class="legend-dot orange"></i><b>Age</b> 排队时长加成 (权重 1,000)</span>
-                <span><i class="legend-dot green"></i><b>Eligible</b> 正在参与 GPU 竞争</span>
+                <span data-i18n-html="prio.legendFs"><i class="legend-dot purple"></i><b>FairShare</b> 公平份额分 (权重 50,000)</span>
+                <span data-i18n-html="prio.legendPart"><i class="legend-dot blue"></i><b>Partition</b> 分区基础分 (固定 1,000)</span>
+                <span data-i18n-html="prio.legendAge"><i class="legend-dot orange"></i><b>Age</b> 排队时长加成 (权重 1,000)</span>
+                <span data-i18n-html="prio.legendEligible"><i class="legend-dot green"></i><b>Eligible</b> 正在参与 GPU 竞争</span>
               </div>
               <span class="small-muted" id="prioLadderSummaryNote">按总优先级从高到低排序</span>
             </div>
@@ -636,12 +646,12 @@
             <div class="panel-head">
               <div>
                 <p class="eyebrow">SLURM SSHARE / ACCOUNT FAIRSHARE LEADERBOARD</p>
-                <h2>课题组账户 FairShare 份额与历史负载排行</h2>
+                <h2 data-i18n="prio.acctsPanelTitle">课题组账户 FairShare 份额与历史负载排行</h2>
               </div>
               <div class="panel-tools">
                 <div class="segmented" id="prioAccountFilter">
-                  <button class="selected" data-acct-filter="active">当前活跃 / 我的账户</button>
-                  <button data-acct-filter="all">全部有记录账户</button>
+                  <button class="selected" data-acct-filter="active" data-i18n="prio.acctActive">当前活跃 / 我的账户</button>
+                  <button data-acct-filter="all" data-i18n="prio.acctAll">全部有记录账户</button>
                 </div>
               </div>
             </div>
@@ -649,21 +659,21 @@
               <table>
                 <thead>
                   <tr>
-                    <th>排名</th>
-                    <th>课题组账户 (Account)</th>
-                    <th>FairShare 因子 &amp; 得分 (满分 3,125)</th>
-                    <th>新任务初始优先级</th>
-                    <th>近7天衰减负载 (RawUsage)</th>
-                    <th>有效消耗占比 (EffectvUsage)</th>
-                    <th>实时 GPU 任务负载</th>
+                    <th data-i18n="prio.thRank">排名</th>
+                    <th data-i18n="prio.thAcct">课题组账户 (Account)</th>
+                    <th data-i18n="prio.thFs">FairShare 因子 &amp; 得分 (满分 3,125)</th>
+                    <th data-i18n="prio.thBase">新任务初始优先级</th>
+                    <th data-i18n="prio.thRaw">近7天衰减负载 (RawUsage)</th>
+                    <th data-i18n="prio.thEff">有效消耗占比 (EffectvUsage)</th>
+                    <th data-i18n="prio.thLoad">实时 GPU 任务负载</th>
                   </tr>
                 </thead>
                 <tbody id="prioAccountsTable"></tbody>
               </table>
             </div>
             <div class="panel-foot">
-              <span id="prioAccountsFootNote">数据来自 <code>sshare -P -l</code> · 份额越高代表近期算力消耗越少，新提交任务优先级越高</span>
-              <button class="text-button" data-view="jobs">查看完整任务队列 <span>→</span></button>
+              <span id="prioAccountsFootNote" data-i18n-html="prio.acctsFootNote">数据来自 <code>sshare -P -l</code> · 份额越高代表近期算力消耗越少，新提交任务优先级越高</span>
+              <button class="text-button" data-view="jobs" data-i18n-html="prio.gotoJobsBtn">查看完整任务队列 <span>→</span></button>
             </div>
           </article>
         </div>
@@ -675,44 +685,44 @@
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">COLLECTOR / CONFIGURATION</p>
-                  <h2>采集设置</h2>
+                  <h2 data-i18n="set.panelTitle">采集设置</h2>
                 </div>
                 <span class="status-pill pending" id="settingsModeBadge">未连接</span>
               </div>
               <form id="settingsForm" class="settings-form">
                 <div class="settings-grid">
                   <label class="field">
-                    <span>自动刷新间隔</span>
+                    <span data-i18n="set.refreshInterval">自动刷新间隔</span>
                     <select id="settingRefreshMs">
-                      <option value="15000">每 15 秒</option>
-                      <option value="30000">每 30 秒</option>
-                      <option value="60000" selected>每 1 分钟（默认）</option>
-                      <option value="120000">每 2 分钟</option>
-                      <option value="300000">每 5 分钟</option>
-                      <option value="0">暂停自动刷新</option>
+                      <option value="15000" data-i18n="set.opt15s">每 15 秒</option>
+                      <option value="30000" data-i18n="set.opt30s">每 30 秒</option>
+                      <option value="60000" selected data-i18n="set.opt1m">每 1 分钟（默认）</option>
+                      <option value="120000" data-i18n="set.opt2m">每 2 分钟</option>
+                      <option value="300000" data-i18n="set.opt5m">每 5 分钟</option>
+                      <option value="0" data-i18n="set.optOff">暂停自动刷新</option>
                     </select>
                   </label>
                   <label class="field">
-                    <span>SSH 主机别名 / 地址</span>
+                    <span data-i18n="set.sshHost">SSH 主机别名 / 地址</span>
                     <input type="text" id="settingSshHost" placeholder="madar" />
                   </label>
                   <label class="field">
-                    <span>SSH 用户名（可选）</span>
-                    <input type="text" id="settingSshUser" placeholder="默认读取 ~/.ssh/config" />
+                    <span data-i18n="set.sshUser">SSH 用户名（可选）</span>
+                    <input type="text" id="settingSshUser" placeholder="默认读取 ~/.ssh/config" data-i18n-placeholder="set.sshUserPlaceholder" />
                   </label>
                   <label class="field">
-                    <span>SSH 端口（可选）</span>
-                    <input type="text" id="settingSshPort" placeholder="默认 22 或 config 配置" />
+                    <span data-i18n="set.sshPort">SSH 端口（可选）</span>
+                    <input type="text" id="settingSshPort" placeholder="默认 22 或 config 配置" data-i18n-placeholder="set.sshPortPlaceholder" />
                   </label>
                   <label class="field">
-                    <span>SSH 超时时间（秒）</span>
+                    <span data-i18n="set.sshTimeout">SSH 超时时间（秒）</span>
                     <input type="number" id="settingSshTimeout" min="2" max="60" step="1" value="20" />
                   </label>
                 </div>
                 <div class="settings-status" id="settingsDiag">正在读取采集配置…</div>
                 <div class="settings-actions">
-                  <button type="button" class="btn-secondary" id="testProbeButton">立即强制刷新</button>
-                  <button type="submit" class="btn-primary" id="saveSettingsButton">保存并应用设置</button>
+                  <button type="button" class="btn-secondary" id="testProbeButton" data-i18n="set.forceRefreshBtn">立即强制刷新</button>
+                  <button type="submit" class="btn-primary" id="saveSettingsButton" data-i18n="set.saveBtn">保存并应用设置</button>
                 </div>
               </form>
             </article>
@@ -725,6 +735,6 @@
         </footer>
       </main>
     </div>
-    <script src="app.js?v=9"></script>
+    <script src="app.js?v=10"></script>
   </body>
 </html>
