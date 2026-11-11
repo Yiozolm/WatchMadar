@@ -44,4 +44,6 @@ $env:MADAR_SSH_ENABLED = "0"
 
 - `GET /api/metrics`：当前 JSON 数据
 - `GET /health`：健康检查
+- `GET /api/settings` / `POST /api/settings`：读取 / 保存采集设置
+- `POST /api/test-connection`：用给定（未保存）的 SSH 设置试连一次，返回登录用户、登录节点、耗时或失败原因
 

@@ -320,3 +320,4 @@ body.light .ladder-row.teammate { background:rgba(24,100,217,.06); border-color:
 body.light .rule-card code, body.light .sub-section-head code, body.light .panel-foot code, body.light .sim-slider-label code, body.light .acct-tag { background:#e4edf1; color:var(--text-2); }
 
 @media(max-width:1150px){.main-content{padding:0 24px}.gpu-grid{grid-template-columns:repeat(3,1fr)}.storage-page-grid,.priority-top-grid,.rules-explain-grid{grid-template-columns:1fr}.overview-kpi-grid,.stats-grid,.settings-grid{grid-template-columns:repeat(2,1fr)}.ladder-row{grid-template-columns:60px 1fr;gap:8px}}
+.settings-test.ok { border-color:var(--green); color:var(--green); } .settings-test.error { border-color:var(--danger); color:var(--danger); } .settings-test[hidden] { display:none; } .btn-secondary:disabled { opacity:.55; cursor:progress; }

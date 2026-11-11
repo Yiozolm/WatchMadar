@@ -231,6 +231,7 @@ const I18N_EN = {
   "set.sshPort": "SSH Port (Optional)",
   "set.sshPortPlaceholder": "Default 22 or ~/.ssh/config",
   "set.sshTimeout": "SSH Timeout (seconds)",
+  "set.testBtn": "Test Connection",
   "set.forceRefreshBtn": "Force Refresh Now",
   "set.saveBtn": "Save & Apply Settings",
 };
@@ -1986,17 +1987,75 @@ function updateRefreshTimer(ms) {
   renderSettingsDiag();
 }
 
-async function saveSettings(event) {
-  event.preventDefault();
-  const refreshMs = Number($("#settingRefreshMs").value);
-  updateRefreshTimer(refreshMs);
-  const payload = {
+function readSshForm() {
+  return {
     ssh_host: $("#settingSshHost").value.trim() || "madar",
     ssh_user: $("#settingSshUser").value.trim(),
     ssh_port: $("#settingSshPort").value.trim(),
     ssh_timeout: Number($("#settingSshTimeout").value) || 8,
-    refresh_ms: refreshMs,
   };
+}
+
+function sshErrorLabel(kind) {
+  const labels = {
+    auth: t("认证失败：密钥未被接受（看板只支持免密登录）", "Authentication failed: key not accepted (only key-based login is supported)"),
+    hostkey: t("主机密钥校验失败", "Host key verification failed"),
+    dns: t("无法解析主机名", "Could not resolve the host name"),
+    refused: t("连接被拒绝，请检查端口", "Connection refused, check the port"),
+    timeout: t("连接超时", "Connection timed out"),
+    unreachable: t("网络不可达（是否需要 VPN？）", "Network unreachable (is a VPN required?)"),
+    invalid: t("填写的主机、用户名或端口无效", "The host, user name or port is not valid"),
+    ssh_missing: t("本机找不到 ssh 程序", "The ssh program was not found on this machine"),
+  };
+  return labels[kind] || t("连接失败", "Connection failed");
+}
+
+// Tries the values currently in the form, without saving them.
+async function testConnection() {
+  const button = $("#testConnectionButton");
+  const box = $("#settingsTestResult");
+  const show = (text, status) => {
+    box.hidden = false;
+    box.textContent = text;
+    box.classList.toggle("ok", status === "ok");
+    box.classList.toggle("error", status === "error");
+  };
+  button.disabled = true;
+  show(t("正在测试连接…", "Testing connection…"), "");
+  try {
+    const response = await fetch("/api/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(readSshForm()),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    const seconds = (Number(result.elapsed_ms || 0) / 1000).toFixed(1);
+    if (result.ok) {
+      const parts = [
+        t(`连接成功 · 用时 ${seconds} 秒`, `Connected in ${seconds}s`),
+        t(`登录用户：${userLabel(result.user)}`, `Login user: ${userLabel(result.user)}`),
+      ];
+      if (result.hostname) parts.push(t(`登录节点：${result.hostname}`, `Login node: ${result.hostname}`));
+      if (!result.slurm) parts.push(t("警告：该主机上找不到 Slurm 命令 (squeue)", "Warning: Slurm commands (squeue) not found on this host"));
+      show(parts.join(" · "), result.slurm && result.user ? "ok" : "error");
+    } else {
+      const detail = result.error ? ` · ${result.error}` : "";
+      show(`${sshErrorLabel(result.error_kind)}${t(`（用时 ${seconds} 秒）`, ` (${seconds}s)`)}${detail}`, "error");
+    }
+  } catch (error) {
+    console.error(error);
+    show(t(`无法连接本地采集服务 (${error.message})`, `Could not reach the local collector service (${error.message})`), "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const refreshMs = Number($("#settingRefreshMs").value);
+  updateRefreshTimer(refreshMs);
+  const payload = { ...readSshForm(), refresh_ms: refreshMs };
   try {
     const response = await fetch("/api/settings", {
       method: "POST",
@@ -2202,6 +2261,7 @@ function bindEvents() {
     );
   });
   $("#settingsForm").addEventListener("submit", saveSettings);
+  $("#testConnectionButton").addEventListener("click", testConnection);
   $("#testProbeButton").addEventListener("click", () => fetchMetrics(true, true));
 
   window.addEventListener("hashchange", () => {

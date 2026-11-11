@@ -100,8 +100,12 @@ def _disconnected_payload(error: str = "") -> dict:
     }
 
 
-def _ssh_command(command: str) -> list[str]:
-    target = f"{SSH_USER}@{SSH_HOST}" if SSH_USER else SSH_HOST
+def _ssh_command(command: str, host: str | None = None, user: str | None = None, port: str | None = None) -> list[str]:
+    """Build the ssh argv; ``host``/``user``/``port`` override the saved settings."""
+    host = SSH_HOST if host is None else host
+    user = SSH_USER if user is None else user
+    port = SSH_PORT if port is None else port
+    target = f"{user}@{host}" if user else host
     args = [
         _find_ssh(),
         "-o", "BatchMode=yes",
@@ -113,8 +117,8 @@ def _ssh_command(command: str) -> list[str]:
     config = Path(SSH_CONFIG).expanduser()
     if SSH_CONFIG and config.exists():
         args.extend(["-F", str(config)])
-    if SSH_PORT:
-        args.extend(["-p", SSH_PORT])
+    if port:
+        args.extend(["-p", port])
     args.extend([target, command])
     return args
 
@@ -992,9 +996,12 @@ def _parse_df_line(value: str, path: str) -> dict | None:
 # The login name drives every "is this mine" decision, so try several sources
 # and always terminate the line: a bare `id -un` that prints nothing would
 # otherwise glue the next marker onto the USER| line.
-_STORAGE_INIT_COMMAND = (
+_USER_PROBE_COMMAND = (
     r'''madar_u=$(id -un 2>/dev/null); [ -n "$madar_u" ] || madar_u=$(whoami 2>/dev/null); '''
     r'''[ -n "$madar_u" ] || madar_u=${USER:-$LOGNAME}; printf 'USER|%s\n' "$madar_u"; '''
+)
+_STORAGE_INIT_COMMAND = (
+    _USER_PROBE_COMMAND +
     r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1 '''
 )
 _DU_REMOTE_COMMAND = r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'HOME_DIRS|\n'; for d in "$HOME"/.[!.]* "$HOME"/*; do [ -e "$d" ] && [ ! -L "$d" ] && (timeout 35 du -sk -x "$d" 2>/dev/null &); done; wait; true'''
@@ -1446,6 +1453,90 @@ def update_settings(data: dict) -> dict:
     return {**get_settings(), "saved": not save_error, "save_error": save_error}
 
 
+_TEST_COMMAND = (
+    _USER_PROBE_COMMAND +
+    r'''printf 'HOST|%s\n' "$(hostname 2>/dev/null)"; '''
+    r'''if command -v squeue >/dev/null 2>&1; then echo 'SLURM|yes'; else echo 'SLURM|no'; fi'''
+)
+
+# stderr fragments (lower case) -> error kind shown by the dashboard
+_SSH_ERROR_KINDS = (
+    ("permission denied", "auth"),
+    ("too many authentication failures", "auth"),
+    ("host key verification failed", "hostkey"),
+    ("could not resolve hostname", "dns"),
+    ("connection refused", "refused"),
+    ("timed out", "timeout"),
+    ("no route to host", "unreachable"),
+    ("network is unreachable", "unreachable"),
+)
+
+
+def _classify_ssh_error(detail: str) -> str:
+    lowered = detail.lower()
+    for fragment, kind in _SSH_ERROR_KINDS:
+        if fragment in lowered:
+            return kind
+    return "other"
+
+
+def test_connection(data: dict) -> dict:
+    """Try an SSH login with the settings in ``data`` without saving them.
+
+    Missing keys fall back to the settings in use, so the form can be tested
+    before it is saved.
+    """
+    def failure(kind: str, detail: str = "", elapsed_ms: int = 0) -> dict:
+        return {"ok": False, "error_kind": kind, "error": detail[:300], "elapsed_ms": elapsed_ms}
+
+    host = _ssh_word(data.get("ssh_host", SSH_HOST))
+    user = _ssh_word(data.get("ssh_user", SSH_USER))
+    port = str(data.get("ssh_port", SSH_PORT)).strip()
+    if not host or user is None:
+        return failure("invalid", "host or user name is empty or not allowed")
+    if port and not (port.isdigit() and 0 < int(port) < 65536):
+        return failure("invalid", "port must be a number between 1 and 65535")
+    try:
+        timeout = max(2.0, min(60.0, float(data.get("ssh_timeout", SSH_TIMEOUT))))
+    except (TypeError, ValueError):
+        timeout = SSH_TIMEOUT
+
+    started = time.monotonic()
+
+    def elapsed_ms() -> int:
+        return round((time.monotonic() - started) * 1000)
+
+    try:
+        completed = subprocess.run(
+            _ssh_command(_TEST_COMMAND, host=host, user=user, port=port),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return failure("timeout", f"no answer within {timeout:g}s", elapsed_ms())
+    except OSError as exc:
+        return failure("ssh_missing", str(exc), elapsed_ms())
+
+    if completed.returncode:
+        detail = " ".join((completed.stderr or completed.stdout).split())
+        # Windows ssh prints localized system messages as octal escapes.
+        detail = re.sub(r"(\\\d{3})+", "", detail).strip(" :")
+        return failure(_classify_ssh_error(detail), detail, elapsed_ms())
+
+    fields = dict(line.split("|", 1) for line in completed.stdout.splitlines() if "|" in line)
+    return {
+        "ok": True,
+        "elapsed_ms": elapsed_ms(),
+        "user": _clean_login_name(fields.get("USER", "")),
+        "hostname": fields.get("HOST", "").strip(),
+        "slurm": fields.get("SLURM", "").strip() == "yes",
+    }
+
+
 def load_metrics(force: bool = False) -> dict:
     """Probe Madar over SSH and return disconnected state on failure."""
     now = time.monotonic()
@@ -1546,6 +1637,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             updated = update_settings(body)
             payload = json.dumps(updated, ensure_ascii=False).encode("utf-8")
+            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            return
+        if path == "/api/test-connection":
+            body = self._read_json_body()
+            if body is None:
+                return
+            payload = json.dumps(test_connection(body), ensure_ascii=False).encode("utf-8")
             self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
             return
         self.send_error(404)
