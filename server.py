@@ -936,6 +936,7 @@ _DU_LOCK = threading.Lock()
 _INIT_FS_CACHE: dict = {"initialized": False, "user": "user", "home_path": "~", "df_home": None}
 _DU_CACHE: dict = {"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False}
 _DU_REFRESH_SECONDS = 1800  # 30 minutes
+JOB_LIST_LIMIT = 300  # jobs sent to the browser, before own/group jobs are appended
 USER_HOME_QUOTA_GB = 50.0
 USER_HOME_QUOTA_TB = USER_HOME_QUOTA_GB / 1000.0
 
@@ -1213,7 +1214,11 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         ssh_user=storage.get("user", "user"),
         partitions_map=partitions_map,
     )
-    jobs = all_jobs[:300]
+    # Cap the payload, but never drop the user's own or their group's jobs:
+    # low-priority pending jobs sort past the cap on a busy queue.
+    jobs = all_jobs[:JOB_LIST_LIMIT] + [
+        job for job in all_jobs[JOB_LIST_LIMIT:] if job.get("is_mine") or job.get("is_group")
+    ]
     total_gpus = sum(node["total"] for node in nodes)
     allocated_gpus = sum(min(node["allocated"], node["total"]) for node in nodes)
     maintenance_gpus = sum(1 for gpu in gpus if gpu["status"] == "maintenance" and gpu.get("substatus") != "restricted")
