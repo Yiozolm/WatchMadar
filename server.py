@@ -1,6 +1,7 @@
 """Madar HPC dashboard server with SSH/Slurm collection.
 
-Run ``python server.py`` and open http://127.0.0.1:8765.
+Run ``python server.py`` and open the URL it prints. The server probes for a
+free port starting at 8766 (override the start with ``MADAR_DASHBOARD_PORT``).
 
 The default path is a read-only SSH probe against the ``madar`` host alias
 from ``~/.ssh/config``. It reads Slurm node allocation, queue state and
@@ -15,6 +16,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -26,7 +28,9 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 HOST = os.environ.get("MADAR_DASHBOARD_HOST", "127.0.0.1")
-PORT = int(os.environ.get("MADAR_DASHBOARD_PORT", "8765"))
+# First port to try; the server probes upward from here until one is free.
+PORT = int(os.environ.get("MADAR_DASHBOARD_PORT", "8766"))
+PORT_PROBE_LIMIT = 50
 SSH_HOST = os.environ.get("MADAR_SSH_HOST", "madar")
 SSH_USER = os.environ.get("MADAR_SSH_USER", "")
 SSH_PORT = os.environ.get("MADAR_SSH_PORT", "")
@@ -1390,10 +1394,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+class DashboardServer(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets two processes bind the same port, which
+    # would make the free-port probe succeed on a port that is already taken.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def bind_free_port(host: str, start: int, attempts: int = PORT_PROBE_LIMIT) -> DashboardServer:
+    """Bind the first free port at or above ``start``."""
+    last_error: OSError | None = None
+    for port in range(start, min(start + attempts, 65536)):
+        try:
+            return DashboardServer((host, port), DashboardHandler)
+        except OSError as exc:
+            last_error = exc
+    raise SystemExit(
+        f"No free port in {start}-{min(start + attempts, 65536) - 1} on {host}: {last_error}"
+    )
+
+
 if __name__ == "__main__":
     mimetypes.add_type("application/javascript", ".js")
-    server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
-    print(f"Madar dashboard running at http://{HOST}:{PORT}")
+    server = bind_free_port(HOST, PORT)
+    port = server.server_address[1]
+    if port != PORT:
+        print(f"Port {PORT} is in use, using {port} instead")
+    print(f"Madar dashboard running at http://{HOST}:{port}")
     print(f"SSH probe host={SSH_HOST}")
     try:
         server.serve_forever()
