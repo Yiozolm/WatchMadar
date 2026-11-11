@@ -253,6 +253,11 @@ const REASON_LABELS_ZH = {
   QOSMaxGRESPerUser: "GPU配额上限",
   QOSMaxJobsPerUserLimit: "任务数上限",
   AssocMaxJobsLimit: "账户任务上限",
+  PartitionTimeLimit: "超出分区时限",
+  Reservation: "资源已被预留",
+  BeginTime: "未到开始时间",
+  InvalidAccount: "账户无效",
+  InvalidQOS: "QoS 无效",
 };
 
 const REASON_LABELS_EN = {
@@ -267,12 +272,58 @@ const REASON_LABELS_EN = {
   QOSMaxGRESPerUser: "GPU Quota Limit",
   QOSMaxJobsPerUserLimit: "Max Jobs Limit",
   AssocMaxJobsLimit: "Acct Jobs Limit",
+  PartitionTimeLimit: "Over Time Limit",
+  Reservation: "Reserved",
+  BeginTime: "Begin Time",
+  InvalidAccount: "Invalid Account",
+  InvalidQOS: "Invalid QoS",
 };
+
+// squeue may append details, e.g. "ReqNodeNotAvail, UnavailableNodes:gpu-01".
+const reasonKey = (reason) => String(reason || "").split(/[,\s(]/)[0];
 
 function getReasonLabel(reason) {
   if (!reason) return "";
   const map = isEn() ? REASON_LABELS_EN : REASON_LABELS_ZH;
-  return map[reason] || reason;
+  return map[reason] || map[reasonKey(reason)] || reason;
+}
+
+// What to do about a pending reason, following the table in the Madar FAQ.
+// `action` is true when the job will not start unless the user does something.
+function getReasonAdvice(reason) {
+  const key = reasonKey(reason);
+  if (!key) return null;
+  if (["Resources", "Priority", "Dependency", "BeginTime", "JobArrayTaskLimit"].includes(key)) {
+    return { action: false, text: t("无需处理，等待即可", "Nothing to do, just wait") };
+  }
+  if (/^(QOS|Assoc)(Max|Grp)/.test(key)) {
+    return {
+      action: false,
+      text: t(
+        "已达到账户或 QoS 的上限，等已有任务结束后会继续；上限不合理时请联系 Research Computing 支持",
+        "An account or QoS limit is reached; the job continues when running jobs finish. Contact Research Computing support if the limit looks wrong"
+      ),
+    };
+  }
+  if (key === "ReqNodeNotAvail") {
+    return {
+      action: false,
+      text: t(
+        "所需节点下线、维护或被预留；长时间不恢复请联系 Research Computing 支持",
+        "The requested nodes are down, drained or reserved; contact Research Computing support if this persists"
+      ),
+    };
+  }
+  const actions = {
+    PartitionTimeLimit: t("申请时长超过分区上限（72 小时），请缩短后重新提交", "The requested time exceeds the partition limit (72 h); resubmit with a shorter time"),
+    Reservation: t("所申请的资源已预留给他人，请改用其他资源重新提交", "The requested resources are reserved for someone else; resubmit to other resources"),
+    InvalidAccount: t("账户有问题，请联系 Research Computing 支持", "Account problem; contact Research Computing support"),
+    InvalidQOS: t("QoS 有问题，请联系 Research Computing 支持", "QoS problem; contact Research Computing support"),
+    JobHeldAdmin: t("任务被管理员挂起，请联系 Research Computing 支持", "Held by an administrator; contact Research Computing support"),
+    JobHeldUser: t("任务被你挂起，可用 scontrol release 恢复", "Held by you; resume it with scontrol release"),
+    DependencyNeverSatisfied: t("前置任务失败，依赖无法满足，请取消后重新提交", "The dependency failed and can never be satisfied; cancel and resubmit"),
+  };
+  return actions[key] ? { action: true, text: actions[key] } : null;
 }
 
 function localizeBackendText(value) {
@@ -901,9 +952,7 @@ function renderStatsAndOverview() {
   $("#storageHomeFoot").innerHTML = isEn()
     ? `Home <b>${escapeHtml(homePath)}</b>`
     : `主目录 <b>${escapeHtml(homePath)}</b>`;
-  $("#storageHealthState").innerHTML = storage.scanning
-    ? t("<i></i>后台统计目录中…", "<i></i>Scanning directories in background…")
-    : t("<i></i>用户目录状态正常", "<i></i>Home directory healthy");
+  setHomeHealth($("#storageHealthState"), usedQuotaPct, storage.scanning, t("<i></i>用户目录状态正常", "<i></i>Home directory healthy"));
 
   $("#ovStorageQuotaRatio").textContent = isInitialScan
     ? isEn()
@@ -1067,7 +1116,10 @@ function renderGpusPage() {
 
   $("#gpuGrid").innerHTML = filtered
     .map((gpu) => {
-      const memory = gpu.memory_used == null || gpu.memory_total == null ? "—" : `${gpu.memory_used}/${gpu.memory_total}G`;
+      // Used memory needs NVML on the compute node, which the login node cannot
+      // read; the total comes from the GPU model and is shown on its own.
+      const memory =
+        gpu.memory_total == null ? "—" : gpu.memory_used == null ? `${gpu.memory_total}G` : `${gpu.memory_used}/${gpu.memory_total}G`;
       const rightMeta =
         gpu.temperature != null ? `<b>${gpu.temperature}°</b>` : gpu.node_state ? `STATE <b>${escapeHtml(gpu.node_state)}</b>` : "<b>—</b>";
       const isMaint = gpu.status === "maintenance";
@@ -1099,6 +1151,31 @@ function renderGpusPage() {
 
   $("#gpuShown").textContent = filtered.length;
   $("#gpuCountDetail").textContent = totalGpus;
+}
+
+// The home quota is fixed at 50 GB and cannot be raised; once it is full,
+// Slurm jobs can no longer be submitted. Warn before that happens.
+const HOME_WARN_PCT = 80;
+const HOME_FULL_PCT = 95;
+
+function setHomeHealth(el, usedPct, scanning, okHtml) {
+  const level = usedPct >= HOME_FULL_PCT ? "full" : usedPct >= HOME_WARN_PCT ? "warn" : "";
+  el.classList.toggle("full", level === "full");
+  el.classList.toggle("warn", level === "warn");
+  const pctText = usedPct.toFixed(0);
+  if (level === "full") {
+    el.innerHTML = t(
+      `<i></i>主目录已用 ${pctText}%，写满后将无法提交作业，请尽快清理`,
+      `<i></i>Home is ${pctText}% full. Jobs cannot be submitted once it fills up; clean up now`
+    );
+  } else if (level === "warn") {
+    el.innerHTML = t(
+      `<i></i>主目录已用 ${pctText}%，配额不可扩容，写满后将无法提交作业`,
+      `<i></i>Home is ${pctText}% full. The quota cannot be raised, and jobs cannot be submitted once it fills up`
+    );
+  } else {
+    el.innerHTML = scanning ? t("<i></i>后台统计目录中…", "<i></i>Scanning directories in background…") : okHtml;
+  }
 }
 
 // Sizes on the shared project file system are in the petabyte range.
@@ -1205,9 +1282,7 @@ function renderStoragePage() {
   $("#storageDetailFoot").innerHTML = isEn()
     ? `Home <b>${escapeHtml(homePath)}</b>`
     : `主目录 <b>${escapeHtml(homePath)}</b>`;
-  $("#storageDetailHealth").innerHTML = storage.scanning
-    ? t("<i></i>后台统计目录中…", "<i></i>Scanning directories in background…")
-    : t("<i></i>各子目录空间统计完成", "<i></i>Subdirectory scan complete");
+  setHomeHealth($("#storageDetailHealth"), usedQuotaPct, storage.scanning, t("<i></i>各子目录空间统计完成", "<i></i>Subdirectory scan complete"));
 
   if (!paths.length) {
     const emptyMsg = storage.scanning
@@ -1277,11 +1352,15 @@ function renderJobRowHtml(job, sshUser = "") {
   const isTeammate = Boolean(job.is_teammate);
   const reasonText = isPending && job.reason ? getReasonLabel(job.reason) : "";
   const statusLabel = reasonText ? `PENDING · ${reasonText}` : job.status;
+  const advice = isPending ? getReasonAdvice(job.reason) : null;
+  const adviceSuffix = advice ? ` · ${t("建议", "Advice")}: ${advice.text}` : "";
+  // Only the user's own jobs get the visible hint, and only when they must act.
+  const adviceHtml = advice?.action && isMine ? `<small class="reason-advice">${escapeHtml(advice.text)}</small>` : "";
   const statusTitle =
     isPending && job.reason
       ? isEn()
-        ? `Pending reason: ${job.reason}`
-        : `排队原因: ${job.reason}`
+        ? `Pending reason: ${job.reason}${adviceSuffix}`
+        : `排队原因: ${job.reason}${adviceSuffix}`
       : job.node
         ? isEn()
           ? `Node: ${job.node}`
@@ -1329,7 +1408,7 @@ function renderJobRowHtml(job, sshUser = "") {
       </div>
     </td>
     <td>${timeText}</td>
-    <td><span class="status-pill ${isPending ? "pending" : ""}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}</span></td>
+    <td><span class="status-pill ${isPending ? "pending" : ""}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}</span>${adviceHtml}</td>
   </tr>`;
 }
 

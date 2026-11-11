@@ -185,6 +185,11 @@ def _model_from_gres(gres: str) -> str:
     return "GPU"
 
 
+# Memory per GPU in GB, from the Madar hardware specification. Used memory is
+# not available: the login node cannot read NVML on the compute nodes.
+_GPU_MEMORY_GB = {"NVIDIA H200": 141}
+
+
 _BLOCKED_REASONS = {
     "Dependency",
     "DependencyNeverSatisfied",
@@ -953,7 +958,7 @@ def _parse_nodes(
                 "util_display": util_display,
                 "util_label": util_label,
                 "memory_used": None,
-                "memory_total": None,
+                "memory_total": _GPU_MEMORY_GB.get(model),
                 "temperature": None,
                 "power": None,
                 "power_limit": None,
