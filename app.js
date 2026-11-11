@@ -116,6 +116,11 @@ const I18N_EN = {
   "st.sortBySizeNote": "Sorted by actual size",
   "st.scanScopeNote": "Scope: Top-level & hidden directories (e.g. .conda / .cache)",
   "st.quotaBaseNote": "Quota baseline <b>50 GB</b>",
+  "st.projTitle": "Shared Project Storage",
+  "st.projDirs": "My project directories",
+  "st.projQuota": "Default quota per project",
+  "st.projFs": "File system usage (all projects combined)",
+  "st.projNote": "Per-project usage cannot be queried by ordinary users: this storage has no user-facing quota command, and du cannot read other members' directories.",
 
   "jobs.cardTotal": "Total Queued & Running",
   "jobs.footSlurmQueue": "Slurm queue",
@@ -1096,10 +1101,32 @@ function renderGpusPage() {
   $("#gpuCountDetail").textContent = totalGpus;
 }
 
+// Sizes on the shared project file system are in the petabyte range.
+function formatTbText(tb) {
+  const val = Number(tb) || 0;
+  return val >= 1000 ? `${(val / 1000).toFixed(2)} PB` : `${val.toFixed(val >= 10 ? 0 : 1)} TB`;
+}
+
+function renderProjectStorage(project) {
+  const section = $("#projectStorageSection");
+  section.hidden = !project;
+  if (!project) return;
+  const dirs = project.dirs || [];
+  $("#projMount").textContent = t(`挂载点 ${project.mount}`, `Mount ${project.mount}`);
+  $("#projDirs").innerHTML = dirs.length
+    ? dirs.map((dir) => `<code>${escapeHtml(dir)}</code>`).join("")
+    : escapeHtml(t("你的账户下没有项目目录", "None of your accounts has a project directory"));
+  $("#projQuota").textContent = formatTbText(project.default_quota_tb);
+  const pct = Math.min(Math.max(Number(project.fs_used_pct) || 0, 0), 100);
+  $("#projFsUsage").textContent = `${formatTbText(project.fs_used_tb)} / ${formatTbText(project.fs_total_tb)} · ${pct.toFixed(1)}%`;
+  $("#projFsBar").style.width = `${pct}%`;
+}
+
 function renderStoragePage() {
   const { cluster, storage } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   const disconnText = t("未连接", "Disconnected");
+  renderProjectStorage(isLive ? storage.project : null);
   if (!isLive) {
     $("#stPageUsed").textContent = "—";
     $("#stPageUsedUnit").textContent = " GB";

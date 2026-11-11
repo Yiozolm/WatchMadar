@@ -32,6 +32,8 @@ python server.py
 
 后端只执行只读命令：`scontrol show node`、`squeue`、`sprio`、`sshare`、`sacctmgr show assoc`、`df` 和带 6 秒超时的 `du`。GPU 卡片上的占用来自 Slurm 的 GPU 分配信息；登录节点不允许直接 SSH 到计算节点时，显存、温度和 NVML 利用率会显示为 `—`，不会用演示值冒充实时值。目录扫描过慢时，会显示所在文件系统的用量并在 API 中保留说明。
 
+存储页还会显示项目共享存储 `/dpc`：你名下各 Slurm 账户对应的项目目录、文档给出的每项目默认配额（2 TB）以及整个文件系统的使用率。单个项目的已用空间不显示——该存储没有普通用户可用的配额命令，`du` 也读不到其他成员的目录。
+
 如需关闭 SSH，可显式设置：
 
 ```powershell

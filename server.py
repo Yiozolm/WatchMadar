@@ -1002,16 +1002,43 @@ _USER_PROBE_COMMAND = (
 )
 _STORAGE_INIT_COMMAND = (
     _USER_PROBE_COMMAND +
-    r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1 '''
+    r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1; '''
+    # Project storage: the shared file system and the user's project directories
+    # (one per Slurm account). Per-project usage cannot be queried by a user.
+    r'''printf '\nDF_PROJECT|'; df -Pk -T /dpc 2>/dev/null | tail -1; printf '\n'; '''
+    r'''for madar_a in $(sacctmgr -nP show assoc user="$madar_u" format=Account 2>/dev/null | sort -u); do '''
+    r'''[ -d "/dpc/$madar_a" ] && printf 'PROJECT_DIR|/dpc/%s\n' "$madar_a"; done; true'''
 )
 _DU_REMOTE_COMMAND = r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'HOME_DIRS|\n'; for d in "$HOME"/.[!.]* "$HOME"/*; do [ -e "$d" ] && [ ! -L "$d" ] && (timeout 35 du -sk -x "$d" 2>/dev/null &); done; wait; true'''
 _DU_LOCK = threading.Lock()
-_INIT_FS_CACHE: dict = {"initialized": False, "user": "", "home_path": "~", "df_home": None}
+_INIT_FS_CACHE: dict = {"initialized": False, "user": "", "home_path": "~", "df_home": None, "project": None}
 _DU_CACHE: dict = {"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False}
 _DU_REFRESH_SECONDS = 1800  # 30 minutes
 JOB_LIST_LIMIT = 300  # jobs sent to the browser, before own/group jobs are appended
 USER_HOME_QUOTA_GB = 50.0
 USER_HOME_QUOTA_TB = USER_HOME_QUOTA_GB / 1000.0
+PROJECT_FS_MOUNT = "/dpc"
+PROJECT_DEFAULT_QUOTA_TB = 2.0  # per project, from the Madar documentation
+
+
+def _build_project_storage(df_project: dict | None, dirs: list[str]) -> dict | None:
+    """Describe the shared project file system, or ``None`` if it is not mounted.
+
+    Only file-system-wide numbers are available: the storage has no quota
+    command for ordinary users, and ``du`` cannot read other members' files.
+    """
+    if not df_project or df_project["mount"] != PROJECT_FS_MOUNT:
+        return None
+    total = df_project["total_bytes"]
+    return {
+        "mount": PROJECT_FS_MOUNT,
+        "dirs": sorted(set(dirs)),
+        "default_quota_tb": PROJECT_DEFAULT_QUOTA_TB,
+        "fs_used_tb": df_project["used_tb"],
+        "fs_total_tb": df_project["quota_tb"],
+        "fs_avail_tb": df_project["avail_tb"],
+        "fs_used_pct": round(df_project["used_bytes"] / total * 100, 1) if total else 0.0,
+    }
 
 
 def _build_user_paths(home_used_gb: float, subdirs: list[dict], quota_gb: float = USER_HOME_QUOTA_GB) -> list[dict]:
@@ -1173,6 +1200,8 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
         user = _INIT_FS_CACHE["user"]
         home_path = _INIT_FS_CACHE["home_path"]
         df_home = _INIT_FS_CACHE["df_home"]
+        df_project = None
+        project_dirs: list[str] = []
         for line in raw.splitlines():
             key, _, value = line.partition("|")
             if key == "USER":
@@ -1181,6 +1210,10 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
                 home_path = value.strip() or home_path
             elif key == "DF_HOME":
                 df_home = _parse_df_line(value, home_path)
+            elif key == "DF_PROJECT":
+                df_project = _parse_df_line(value, PROJECT_FS_MOUNT)
+            elif key == "PROJECT_DIR" and value.strip():
+                project_dirs.append(value.strip())
         # Last resort: the login name we connected with, when one is configured.
         user = user or _clean_login_name(SSH_USER)
         if df_home:
@@ -1189,6 +1222,7 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
                 "user": user,
                 "home_path": home_path,
                 "df_home": df_home,
+                "project": _build_project_storage(df_project, project_dirs),
             })
 
     if not _INIT_FS_CACHE["initialized"] or not _INIT_FS_CACHE["df_home"]:
@@ -1229,6 +1263,7 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
         "used_tb": home_used_tb,
         "paths": paths,
         "subdirs": subdirs,
+        "project": _INIT_FS_CACHE["project"],
         "users": [{"user": user, "used_tb": home_used_tb, "used_gb": home_used_gb, "quota_tb": USER_HOME_QUOTA_TB, "files": 0}],
     }
 
@@ -1445,7 +1480,7 @@ def update_settings(data: dict) -> dict:
         connection_changed = _connection_settings() != before
         if connection_changed:
             _CACHE.update({"at": 0.0, "payload": None})
-            _INIT_FS_CACHE.update({"initialized": False, "user": "", "home_path": "~", "df_home": None})
+            _INIT_FS_CACHE.update({"initialized": False, "user": "", "home_path": "~", "df_home": None, "project": None})
         save_error = _save_settings()
     if connection_changed:
         with _DU_LOCK:

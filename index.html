@@ -373,6 +373,36 @@
               </div>
             </article>
           </section>
+
+          <section class="project-storage-section" id="projectStorageSection" hidden>
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">PROJECT STORAGE / DPC</p>
+                  <h2 data-i18n="st.projTitle">项目共享存储</h2>
+                </div>
+                <span class="small-muted" id="projMount">—</span>
+              </div>
+              <div class="project-storage-grid">
+                <div class="project-fact">
+                  <span data-i18n="st.projDirs">我的项目目录</span>
+                  <div class="project-dirs" id="projDirs">—</div>
+                </div>
+                <div class="project-fact">
+                  <span data-i18n="st.projQuota">每个项目的默认配额</span>
+                  <strong id="projQuota">—</strong>
+                </div>
+                <div class="project-fact">
+                  <span data-i18n="st.projFs">文件系统整体使用（所有项目合计）</span>
+                  <strong id="projFsUsage">—</strong>
+                  <div class="project-bar"><i id="projFsBar"></i></div>
+                </div>
+              </div>
+              <div class="panel-foot">
+                <span class="small-muted" data-i18n="st.projNote">单个项目的已用空间无法由普通用户查询：该存储没有用户可用的配额命令，du 也读不到其他成员的目录。</span>
+              </div>
+            </article>
+          </section>
         </div>
 
         <!-- ==================== VIEW 4: JOBS (任务队列独立页) ==================== -->
