@@ -339,6 +339,53 @@ def _parse_sshare(
     return accounts_share, user_rows
 
 
+_SUBMIT_LIMIT_FIELDS = ("GrpJobs", "GrpSubmit", "MaxJobs", "MaxSubmit")
+
+
+def _parse_assoc_limits(raw: str) -> dict:
+    """Parse ``sacctmgr -nP show assoc`` rows into account and user job limits."""
+    accounts: dict[str, dict] = {}
+    users: dict[tuple[str, str], dict] = {}
+    for line in raw.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 3 + len(_SUBMIT_LIMIT_FIELDS) or not parts[0]:
+            continue
+        acct, user, parent = parts[0], parts[1], parts[2]
+        limits = dict(zip(_SUBMIT_LIMIT_FIELDS, parts[3:]))
+        if user:
+            users[(acct, user)] = limits
+        else:
+            accounts[acct] = {"parent": parent, "limits": limits}
+    return {"accounts": accounts, "users": users}
+
+
+def _submit_block(assoc_limits: dict | None, account: str, user: str) -> str:
+    """Return e.g. ``"GrpSubmit=0"`` when a zero job limit on the user's
+    association, the account or any parent account forbids submitting."""
+    if not assoc_limits:
+        return ""
+
+    def zero_limit(limits: dict) -> str:
+        for field in _SUBMIT_LIMIT_FIELDS:
+            if limits.get(field) == "0":
+                return f"{field}=0"
+        return ""
+
+    blocked = zero_limit(assoc_limits["users"].get((account, user), {}))
+    seen: set[str] = set()
+    current = account
+    while not blocked and current and current not in seen:
+        seen.add(current)
+        info = assoc_limits["accounts"].get(current)
+        if not info:
+            break
+        blocked = zero_limit(info["limits"])
+        if blocked and current != account:
+            blocked += f" ({current})"
+        current = info["parent"]
+    return blocked
+
+
 def _parse_jobs(
     raw: str,
     sprio_map: dict[str, dict] | None = None,
@@ -461,6 +508,7 @@ def _build_priority_payload(
     user_rows: list[dict],
     ssh_user: str,
     partitions_map: dict[str, dict],
+    assoc_limits: dict | None = None,
 ) -> dict:
     acct_job_stats: dict[str, dict] = {}
     for job in all_jobs:
@@ -580,8 +628,11 @@ def _build_priority_payload(
         my_pending = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
         my_pending_gpus = sum(j["gpus"] for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
         grp_st = acct_job_stats.get(acct_name, {"running_jobs": 0, "running_gpus": 0, "pending_jobs": 0, "pending_gpus": 0})
+        submit_block = _submit_block(assoc_limits, acct_name, ssh_user)
         enriched_user_accounts.append({
             **row,
+            "can_submit": not submit_block,
+            "submit_block": submit_block,
             "my_running_jobs": my_running,
             "my_pending_jobs": my_pending,
             "my_pending_gpus": my_pending_gpus,
@@ -590,7 +641,7 @@ def _build_priority_payload(
             "group_pending_jobs": grp_st["pending_jobs"],
             "group_pending_gpus": grp_st["pending_gpus"],
         })
-    enriched_user_accounts.sort(key=lambda x: (-x["base_priority"], x["account"]))
+    enriched_user_accounts.sort(key=lambda x: (not x["can_submit"], -x["base_priority"], x["account"]))
 
     pending_jobs = [j for j in all_jobs if j["status"] != "RUNNING"]
     pending_jobs.sort(key=lambda j: (-j["priority"], 0 if j["eligible"] else 1, j["id"]))
@@ -642,10 +693,12 @@ def _build_priority_payload(
 
     my_pending_groups = [g for g in queue_groups if g["is_mine"]]
     my_top_pending = my_pending_groups[0] if my_pending_groups else None
-    my_best_acct = enriched_user_accounts[0] if enriched_user_accounts else None
+    # Accounts that cannot accept jobs sort last and are never the "best" one.
+    my_best_acct = next((a for a in enriched_user_accounts if a["can_submit"]), None)
     my_active_acct = (
         next((a for a in enriched_user_accounts if a["my_pending_jobs"] > 0 or a["my_running_jobs"] > 0), None)
         or my_best_acct
+        or (enriched_user_accounts[0] if enriched_user_accounts else None)
     )
 
     accounts_list: list[dict] = []
@@ -1158,13 +1211,16 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         r'''printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r|%Q|%a|%q|%l" 2>/dev/null; '''
         r'''printf '__MADAR_SPRIO__\n'; sprio -h -p gpu,interactive -o "%i|%Y|%A|%F|%J|%P|%Q|%N|%a|%f" 2>/dev/null; '''
         r'''printf '__MADAR_SSHARE__\n'; sshare -a -P -l 2>/dev/null; '''
-        r'''printf '__MADAR_PRIO_CFG__\n'; scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)"'''
+        r'''printf '__MADAR_PRIO_CFG__\n'; scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)"; '''
+        # Job limits for every account plus the current user's own associations.
+        r'''printf '__MADAR_ASSOC__\n'; sacctmgr -nP show assoc format=Account,User,ParentName,GrpJobs,GrpSubmit,MaxJobs,MaxSubmit 2>/dev/null '''
+        r'''| awk -F'|' -v u="$(id -un)" '$2=="" || $2==u'; true'''
     )
     if need_init_fs:
         probe_command += r'''; printf '__MADAR_STORAGE__\n'; ''' + _STORAGE_INIT_COMMAND
 
     raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 20))
-    sections = {"partitions": [], "nodes": [], "queue": [], "sprio": [], "sshare": [], "prio_cfg": [], "storage": []}
+    sections = {"partitions": [], "nodes": [], "queue": [], "sprio": [], "sshare": [], "prio_cfg": [], "assoc": [], "storage": []}
     current = None
     for line in raw.splitlines():
         marker = {
@@ -1174,6 +1230,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
             "__MADAR_SPRIO__": "sprio",
             "__MADAR_SSHARE__": "sshare",
             "__MADAR_PRIO_CFG__": "prio_cfg",
+            "__MADAR_ASSOC__": "assoc",
             "__MADAR_STORAGE__": "storage",
         }.get(line.strip())
         if marker:
@@ -1213,6 +1270,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         user_rows=user_rows,
         ssh_user=storage.get("user", "user"),
         partitions_map=partitions_map,
+        assoc_limits=_parse_assoc_limits("\n".join(sections["assoc"])),
     )
     # Cap the payload, but never drop the user's own or their group's jobs:
     # low-priority pending jobs sort past the cap on a busy queue.

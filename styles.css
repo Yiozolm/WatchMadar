@@ -243,6 +243,7 @@ body.light .connection.disconnected { border-color:rgba(207,46,64,.3); backgroun
 .my-acct-card { padding:12px 13px; border-radius:10px; border:1px solid var(--border); background:rgba(7,20,31,.45); cursor:pointer; transition:.18s; display:grid; gap:7px; position:relative; }
 .my-acct-card:hover { border-color:#3d6376; background:#102536; }
 .my-acct-card.best { border-color:rgba(56,214,161,.38); background:rgba(56,214,161,.05); }
+.my-acct-card.blocked > :not(.my-acct-top) { opacity:.5; }
 .my-acct-card.active-sim { box-shadow:inset 0 0 0 1px var(--purple); border-color:var(--purple); }
 .my-acct-top { display:flex; justify-content:space-between; align-items:center; gap:6px; }
 .my-acct-name { font:600 13px "Space Grotesk",sans-serif; color:var(--text); display:flex; align-items:center; gap:6px; }

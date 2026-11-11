@@ -1677,12 +1677,20 @@ function renderPriorityPage() {
   if (!userAccounts.length) {
     $("#myAccountsList").innerHTML = `<div class="empty-state">${t("未查询到个人关联账户明细", "No associated Slurm accounts found for current user")}</div>`;
   } else {
-    const maxUserBase = Math.max(...userAccounts.map((a) => a.base_priority), 1);
+    // Only accounts that accept jobs compete for the "recommended" badge.
+    const usableAccounts = userAccounts.filter((a) => a.can_submit !== false);
+    const maxUserBase = Math.max(...usableAccounts.map((a) => a.base_priority), 1);
     $("#myAccountsList").innerHTML = userAccounts
       .map((acct) => {
-        const isBest = userAccounts.length > 1 && acct.base_priority === maxUserBase;
+        const isBlocked = acct.can_submit === false;
+        const isBest = !isBlocked && usableAccounts.length > 1 && acct.base_priority === maxUserBase;
         const isSimSelected = state.simSelectedAcct === acct.account;
-        const badgeHtml = isBest
+        const blockTitle = isEn()
+          ? `Slurm limit ${acct.submit_block}: jobs cannot be submitted under this account`
+          : `Slurm 限制 ${acct.submit_block}：该账户无法提交任务`;
+        const badgeHtml = isBlocked
+          ? `<span class="node-badge down" title="${escapeHtml(blockTitle)}">${t("不可提交", "Cannot Submit")} · ${escapeHtml(acct.submit_block)}</span>`
+          : isBest
           ? `<span class="node-badge online">${t("推荐高优账户", "Recommended Best")}</span>`
           : acct.my_pending_jobs > 0
             ? `<span class="node-badge maint">${isEn() ? `Queued (${acct.my_pending_jobs})` : `当前排队中 (${acct.my_pending_jobs})`}</span>`
@@ -1691,7 +1699,7 @@ function renderPriorityPage() {
         const cardTitle = isEn()
           ? `Click to load ${acct.account} FairShare (${acct.fairshare_points} pts) into simulator`
           : `点击将 ${acct.account} 的公平份额 (${acct.fairshare_points}分) 带入下方推演器`;
-        return `<div class="my-acct-card ${isBest ? "best" : ""} ${isSimSelected ? "active-sim" : ""}" data-sim-acct="${escapeHtml(acct.account)}" data-sim-fs="${acct.fairshare_points}" title="${escapeHtml(cardTitle)}">
+        return `<div class="my-acct-card ${isBest ? "best" : ""} ${isBlocked ? "blocked" : ""} ${isSimSelected ? "active-sim" : ""}" data-sim-acct="${escapeHtml(acct.account)}" data-sim-fs="${acct.fairshare_points}" title="${escapeHtml(cardTitle)}">
           <div class="my-acct-top">
             <div class="my-acct-name"><span>-A ${escapeHtml(acct.account)}</span></div>
             ${badgeHtml}
@@ -1700,7 +1708,7 @@ function renderPriorityPage() {
             <strong>${acct.base_priority} <small style="font-size:11px;font-weight:400;color:var(--muted)">${t("初始总分", "Base Prio")}</small></strong>
             <span>FairShare <b>${acct.fairshare_points}</b> / 3125 (${fsRatioPct}%)</span>
           </div>
-          <div class="util-bar"><span style="width:${Math.max(Number(fsRatioPct), 3)}%;background:${isBest ? "var(--green)" : "var(--purple)"}"></span></div>
+          <div class="util-bar"><span style="width:${Math.max(Number(fsRatioPct), 3)}%;background:${isBlocked ? "var(--muted)" : isBest ? "var(--green)" : "var(--purple)"}"></span></div>
           <div class="my-acct-meta">
             <div><span>${t("课题组总消耗 (7天衰减):", "Group Usage (7d decayed):")}</span><b>${acct.account_raw_usage_hours.toLocaleString()} ${t("核时", "core-hrs")}</b></div>
             <div><span>${t("我个人消耗 / 有效占比:", "My Usage / Effective:")}</span><b>${acct.raw_usage_hours.toLocaleString()} ${t("核时", "core-hrs")} / ${(acct.effectv_usage * 100).toFixed(2)}%</b></div>

@@ -28,7 +28,7 @@ $env:MADAR_SSH_CONFIG = "$env:USERPROFILE\.ssh\config"
 python server.py
 ```
 
-后端只执行只读命令：`scontrol show node`、`squeue`、`sinfo`、`df` 和带 6 秒超时的 `du`。GPU 卡片上的占用来自 Slurm 的 GPU 分配信息；登录节点不允许直接 SSH 到计算节点时，显存、温度和 NVML 利用率会显示为 `—`，不会用演示值冒充实时值。目录扫描过慢时，会显示所在文件系统的用量并在 API 中保留说明。
+后端只执行只读命令：`scontrol show node`、`squeue`、`sprio`、`sshare`、`sacctmgr show assoc`、`df` 和带 6 秒超时的 `du`。GPU 卡片上的占用来自 Slurm 的 GPU 分配信息；登录节点不允许直接 SSH 到计算节点时，显存、温度和 NVML 利用率会显示为 `—`，不会用演示值冒充实时值。目录扫描过慢时，会显示所在文件系统的用量并在 API 中保留说明。
 
 如需关闭 SSH，可显式设置：
 
