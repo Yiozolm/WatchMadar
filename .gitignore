@@ -11,3 +11,5 @@ venv/
 # Local runtime output
 *.log
 metrics.local.json
+settings.local.json
+settings.local.json.tmp

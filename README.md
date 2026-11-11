@@ -28,6 +28,8 @@ $env:MADAR_SSH_CONFIG = "$env:USERPROFILE\.ssh\config"
 python server.py
 ```
 
+在页面"采集设置"里保存的 SSH 主机、用户名、端口、超时和自动刷新间隔会写入项目目录下的 `settings.local.json`（已加入 `.gitignore`），下次启动时自动生效，并且**优先于上面的环境变量**。删除该文件即可恢复为环境变量 / 默认值；文件位置可用 `MADAR_SETTINGS_FILE` 修改。
+
 后端只执行只读命令：`scontrol show node`、`squeue`、`sprio`、`sshare`、`sacctmgr show assoc`、`df` 和带 6 秒超时的 `du`。GPU 卡片上的占用来自 Slurm 的 GPU 分配信息；登录节点不允许直接 SSH 到计算节点时，显存、温度和 NVML 利用率会显示为 `—`，不会用演示值冒充实时值。目录扫描过慢时，会显示所在文件系统的用量并在 API 中保留说明。
 
 如需关闭 SSH，可显式设置：

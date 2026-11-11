@@ -1965,6 +1965,13 @@ async function fetchSettings() {
     $("#settingSshUser").value = cfg.ssh_user || "";
     $("#settingSshPort").value = cfg.ssh_port || "";
     $("#settingSshTimeout").value = cfg.ssh_timeout || 20;
+    // The refresh interval is saved by the server so it survives restarts.
+    const refreshMs = Number(cfg.refresh_ms);
+    const refreshSelect = $("#settingRefreshMs");
+    if ([...refreshSelect.options].some((option) => Number(option.value) === refreshMs)) {
+      refreshSelect.value = String(refreshMs);
+      if (refreshMs !== state.refreshMs) updateRefreshTimer(refreshMs);
+    }
   } catch (error) {
     console.error(error);
   }
@@ -1988,6 +1995,7 @@ async function saveSettings(event) {
     ssh_user: $("#settingSshUser").value.trim(),
     ssh_port: $("#settingSshPort").value.trim(),
     ssh_timeout: Number($("#settingSshTimeout").value) || 8,
+    refresh_ms: refreshMs,
   };
   try {
     const response = await fetch("/api/settings", {
@@ -1996,8 +2004,21 @@ async function saveSettings(event) {
       body: JSON.stringify(payload),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    showToastMessage(t("采集设置已保存，正在重新连接…", "Settings saved. Reconnecting…"));
-    await fetchMetrics(true, true);
+    const result = await response.json();
+    await fetchMetrics(false, true);
+    if (result.saved === false) {
+      // Applied to the running collector, but lost on the next restart.
+      showToastMessage(
+        t("设置已应用，但写入配置文件失败，重启后会丢失", "Settings applied, but could not be written to disk and will be lost on restart"),
+        true
+      );
+    } else {
+      const isLive = Boolean(state.data?.cluster?.connected);
+      showToastMessage(
+        isLive ? t("采集设置已保存", "Settings saved") : t("设置已保存，但未能连接到集群", "Settings saved, but the cluster is unreachable"),
+        !isLive
+      );
+    }
   } catch (error) {
     console.error(error);
     showToastMessage(t("保存采集设置失败", "Failed to save settings"), true);

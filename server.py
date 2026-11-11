@@ -37,6 +37,11 @@ SSH_PORT = os.environ.get("MADAR_SSH_PORT", "")
 SSH_TIMEOUT = float(os.environ.get("MADAR_SSH_TIMEOUT", "20"))
 SSH_CONFIG = os.environ.get("MADAR_SSH_CONFIG", str(Path.home() / ".ssh" / "config"))
 SSH_BIN = os.environ.get("MADAR_SSH_BIN", "")
+# Settings saved from the dashboard. They override the environment defaults
+# above on the next start; delete the file to go back to the environment.
+SETTINGS_FILE = Path(os.environ.get("MADAR_SETTINGS_FILE", str(ROOT / "settings.local.json")))
+REFRESH_MS_CHOICES = (0, 15000, 30000, 60000, 120000, 300000)
+REFRESH_MS = 60000  # browser auto-refresh interval; 0 pauses it
 
 _CACHE_LOCK = threading.Lock()
 _SSH_LOCK = threading.Lock()
@@ -1347,30 +1352,98 @@ def get_settings() -> dict:
         "ssh_port": SSH_PORT,
         "ssh_timeout": SSH_TIMEOUT,
         "ssh_config": SSH_CONFIG,
+        "refresh_ms": REFRESH_MS,
     }
 
 
+_SAVED_SETTING_KEYS = ("ssh_host", "ssh_user", "ssh_port", "ssh_timeout", "refresh_ms")
+
+
+def _ssh_word(value) -> str | None:
+    """Return a cleaned SSH host/user, or ``None`` if it is not usable.
+
+    The value becomes part of the ssh destination argument, so a leading
+    ``-`` (which ssh would read as an option) or whitespace is rejected.
+    """
+    word = str(value).strip()
+    if word.startswith("-") or any(ch.isspace() for ch in word):
+        return None
+    return word
+
+
+def _apply_settings(data: dict) -> None:
+    """Validate ``data`` and copy the usable values into the globals."""
+    global SSH_HOST, SSH_USER, SSH_PORT, SSH_TIMEOUT, REFRESH_MS
+    if "ssh_host" in data:
+        host = _ssh_word(data["ssh_host"])
+        if host:
+            SSH_HOST = host
+    if "ssh_user" in data:
+        user = _ssh_word(data["ssh_user"])
+        if user is not None:
+            SSH_USER = user
+    if "ssh_port" in data:
+        port = str(data["ssh_port"]).strip()
+        if not port or (port.isdigit() and 0 < int(port) < 65536):
+            SSH_PORT = port
+    if "ssh_timeout" in data:
+        try:
+            SSH_TIMEOUT = max(2.0, min(60.0, float(data["ssh_timeout"])))
+        except (TypeError, ValueError):
+            pass
+    if "refresh_ms" in data:
+        try:
+            refresh_ms = int(data["refresh_ms"])
+        except (TypeError, ValueError):
+            refresh_ms = -1
+        if refresh_ms in REFRESH_MS_CHOICES:
+            REFRESH_MS = refresh_ms
+
+
+def _load_saved_settings() -> None:
+    """Apply settings saved by an earlier run, if there are any."""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        print(f"[madar-dashboard] ignoring unreadable settings file {SETTINGS_FILE}: {exc}")
+        return
+    if isinstance(data, dict):
+        _apply_settings(data)
+
+
+def _save_settings() -> str:
+    """Write the current settings to disk; return an error message or ``""``."""
+    current = get_settings()
+    saved = {key: current[key] for key in _SAVED_SETTING_KEYS}
+    tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, SETTINGS_FILE)
+    except OSError as exc:
+        print(f"[madar-dashboard] could not save settings to {SETTINGS_FILE}: {exc}")
+        return str(exc)
+    return ""
+
+
+def _connection_settings() -> tuple:
+    return (SSH_HOST, SSH_USER, SSH_PORT, SSH_TIMEOUT)
+
+
 def update_settings(data: dict) -> dict:
-    global SSH_HOST, SSH_USER, SSH_PORT, SSH_TIMEOUT
     with _CACHE_LOCK:
-        if "ssh_host" in data:
-            host = str(data["ssh_host"]).strip()
-            if host:
-                SSH_HOST = host
-        if "ssh_user" in data:
-            SSH_USER = str(data["ssh_user"]).strip()
-        if "ssh_port" in data:
-            SSH_PORT = str(data["ssh_port"]).strip()
-        if "ssh_timeout" in data:
-            try:
-                SSH_TIMEOUT = max(2.0, min(60.0, float(data["ssh_timeout"])))
-            except (TypeError, ValueError):
-                pass
-        _CACHE.update({"at": 0.0, "payload": None})
-        _INIT_FS_CACHE.update({"initialized": False, "user": "", "home_path": "~", "df_home": None})
-    with _DU_LOCK:
-        _DU_CACHE.update({"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False})
-    return get_settings()
+        before = _connection_settings()
+        _apply_settings(data)
+        connection_changed = _connection_settings() != before
+        if connection_changed:
+            _CACHE.update({"at": 0.0, "payload": None})
+            _INIT_FS_CACHE.update({"initialized": False, "user": "", "home_path": "~", "df_home": None})
+        save_error = _save_settings()
+    if connection_changed:
+        with _DU_LOCK:
+            _DU_CACHE.update({"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False})
+    return {**get_settings(), "saved": not save_error, "save_error": save_error}
 
 
 def load_metrics(force: bool = False) -> dict:
@@ -1444,15 +1517,33 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except _DISCONNECT_ERRORS:
             return
 
+    def _read_json_body(self) -> dict | None:
+        """Return the JSON object in the request body, or ``None`` after
+        answering with an error.
+
+        Only ``application/json`` is accepted: a page on another origin cannot
+        send that content type without a CORS preflight, which this server
+        never approves, so other sites cannot change the SSH settings.
+        """
+        if self.headers.get_content_type() != "application/json":
+            self.send_error(415, "Content-Type must be application/json")
+            return None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            self.send_error(400, "Request body must be a JSON object")
+            return None
+        return body
+
     def do_POST(self):  # noqa: N802 - stdlib API name
         path = urlparse(self.path).path
         if path == "/api/settings":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                raw = self.rfile.read(length) if length > 0 else b"{}"
-                body = json.loads(raw.decode("utf-8"))
-            except (ValueError, json.JSONDecodeError):
-                body = {}
+            body = self._read_json_body()
+            if body is None:
+                return
             updated = update_settings(body)
             payload = json.dumps(updated, ensure_ascii=False).encode("utf-8")
             self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
@@ -1500,6 +1591,9 @@ def bind_free_port(host: str, start: int, attempts: int = PORT_PROBE_LIMIT) -> D
     )
 
 
+_load_saved_settings()
+
+
 if __name__ == "__main__":
     mimetypes.add_type("application/javascript", ".js")
     server = bind_free_port(HOST, PORT)
@@ -1508,6 +1602,7 @@ if __name__ == "__main__":
         print(f"Port {PORT} is in use, using {port} instead")
     print(f"Madar dashboard running at http://{HOST}:{port}")
     print(f"SSH probe host={SSH_HOST}")
+    print(f"Settings file: {SETTINGS_FILE}{'' if SETTINGS_FILE.exists() else ' (not created yet)'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
