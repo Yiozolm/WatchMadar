@@ -22,6 +22,9 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const isEn = () => state.lang === "en";
 const t = (zh, en) => (state.lang === "en" ? en : zh);
+// Display text for the login name; the real value may be empty when the
+// server could not resolve it, and must never be used for job matching.
+const userLabel = (user) => user || t("未识别用户", "Unknown user");
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 
@@ -626,7 +629,7 @@ function getNodeBadgeInfo(node) {
 function updatePageHeader() {
   const meta = VIEW_META[state.activeView] || VIEW_META.overview;
   const isLive = Boolean(state.data?.cluster?.connected && state.data?.cluster?.data_source === "ssh");
-  const sshUser = isLive ? state.data?.storage?.user || "user" : "User";
+  const sshUser = isLive ? userLabel(state.data?.storage?.user) : "User";
   $("#pageTitle").textContent = meta.title();
   $("#pageEyebrow").textContent = meta.eyebrow;
   $("#pageHeading").innerHTML = meta.headingHtml(sshUser);
@@ -727,11 +730,12 @@ function renderStatsAndOverview() {
     return;
   }
 
-  const sshUser = storage.user || "user";
-  const homePath = storage.home_path || `/home/${sshUser}`;
-  $("#sidebarUser").textContent = sshUser;
+  const sshUser = storage.user || "";
+  const sshUserText = userLabel(sshUser);
+  const homePath = storage.home_path || (sshUser ? `/home/${sshUser}` : "~");
+  $("#sidebarUser").textContent = sshUserText;
   $("#sidebarHome").textContent = homePath;
-  $("#sidebarAvatar").textContent = sshUser.slice(0, 1).toUpperCase();
+  $("#sidebarAvatar").textContent = sshUser ? sshUser.slice(0, 1).toUpperCase() : "?";
 
   const totalGpus = Number(cluster.gpu_total) || gpus.length || 0;
   const onlineGpus = Number(cluster.gpu_online) || 0;
@@ -839,7 +843,7 @@ function renderStatsAndOverview() {
       : `共 ${nodes.length} 个计算节点`;
 
   const allJobs = state.data.jobs || [];
-  const myJobsCount = allJobs.filter((j) => j.owner === sshUser).length;
+  const myJobsCount = allJobs.filter((j) => j.is_mine || (sshUser && j.owner === sshUser)).length;
   const prioSummary = state.data.priority?.summary || {};
   const myPrio = prioSummary.my_current_priority || 0;
   const myRank = prioSummary.my_eligible_rank;
@@ -925,7 +929,7 @@ function renderStatsAndOverview() {
   }
 
   $("#ovStorageHomePath").textContent = homePath;
-  $("#ovStorageUserLabel").textContent = isEn() ? `SSH user: ${sshUser}` : `SSH 登录用户: ${sshUser}`;
+  $("#ovStorageUserLabel").textContent = isEn() ? `SSH user: ${sshUserText}` : `SSH 登录用户: ${sshUserText}`;
 
   if (storage.fs_total_tb) {
     $("#ovStorageFsSummary").textContent = `${storage.fs_used_tb} / ${storage.fs_total_tb} TB`;
@@ -1123,8 +1127,8 @@ function renderStoragePage() {
     return;
   }
 
-  const sshUser = storage.user || "user";
-  const homePath = storage.home_path || `/home/${sshUser}`;
+  const sshUser = storage.user || "";
+  const homePath = storage.home_path || (sshUser ? `/home/${sshUser}` : "~");
   const homeUsedGb = storage.home_used_gb ?? storage.used_tb * 1000;
   const quotaGb = storage.home_quota_gb || HOME_QUOTA_GB;
   const availGb = Math.max(quotaGb - homeUsedGb, 0);
@@ -1339,7 +1343,7 @@ function renderJobsPage() {
   const members = groupInfo.members || [];
   const runningJobs = jobs.filter((j) => j.status === "RUNNING");
   const pendingJobs = jobs.filter((j) => j.status !== "RUNNING");
-  const myJobs = jobs.filter((j) => j.is_mine || j.owner === sshUser);
+  const myJobs = jobs.filter((j) => j.is_mine || (sshUser && j.owner === sshUser));
   const myRunningCount = myJobs.filter((j) => j.status === "RUNNING").length;
   const myPendingCount = myJobs.length - myRunningCount;
   const groupJobsCount = groupInfo.total_jobs ?? jobs.filter((j) => j.is_group).length;
@@ -1434,7 +1438,7 @@ function renderJobsPage() {
 
   let activeFilterLabel = "";
   if (state.selectedMember !== "all") {
-    const isMeSelected = state.selectedMember === sshUser;
+    const isMeSelected = Boolean(sshUser) && state.selectedMember === sshUser;
     activeFilterLabel = isEn()
       ? `· Filtered member: ${state.selectedMember}${isMeSelected ? " (Me)" : " (Group)"}`
       : `· 已筛选成员: ${state.selectedMember}${isMeSelected ? " (我)" : " (同组)"}`;
@@ -1447,7 +1451,7 @@ function renderJobsPage() {
       ? `· Filtered: Teammates' Jobs (excluding me)`
       : `· 已筛选: 同组其他成员任务 (不含本人)`;
   } else if (state.jobFilter === "mine") {
-    activeFilterLabel = isEn() ? `· Filtered: My Jobs (${sshUser})` : `· 已筛选: 我的任务 (${sshUser})`;
+    activeFilterLabel = isEn() ? `· Filtered: My Jobs (${userLabel(sshUser)})` : `· 已筛选: 我的任务 (${userLabel(sshUser)})`;
   }
   $("#jobActiveMemberTag").textContent = activeFilterLabel;
 
@@ -1457,7 +1461,7 @@ function renderJobsPage() {
     if (state.jobFilter === "RUNNING" && job.status !== "RUNNING") return false;
     if (state.jobFilter === "PENDING" && job.status === "RUNNING") return false;
     if (state.selectedMember === "all") {
-      if (state.jobFilter === "mine" && !(job.is_mine || job.owner === sshUser)) return false;
+      if (state.jobFilter === "mine" && !(job.is_mine || (sshUser && job.owner === sshUser))) return false;
       if (state.jobFilter === "group" && !job.is_group) return false;
       if (state.jobFilter === "teammates" && !job.is_teammate) return false;
     }
@@ -1593,14 +1597,14 @@ function renderPriorityPage() {
     return;
   }
 
-  const sshUser = storage?.user || "user";
+  const sshUser = storage?.user || "";
   const cfg = priority.config || {};
   const summary = priority.summary || {};
   const userAccounts = priority.user_accounts || [];
   const queueGroups = priority.queue_groups || [];
   const accountsList = priority.accounts || [];
 
-  $("#prioSimUserTag").textContent = isEn() ? `SSH User: ${sshUser}` : `SSH 用户: ${sshUser}`;
+  $("#prioSimUserTag").textContent = isEn() ? `SSH User: ${userLabel(sshUser)}` : `SSH 用户: ${userLabel(sshUser)}`;
   $("#prioPluginBadge").textContent = cfg.priority_type || "priority/multifactor";
   $("#prioCardFsWeight").textContent = (cfg.weights?.fairshare ?? 50000).toLocaleString();
   $("#prioCardFsMax").textContent = isEn()
@@ -1746,7 +1750,7 @@ function renderPriorityPage() {
           priority: j.priority,
           reason: j.reason,
           eligible: j.eligible,
-          is_mine: Boolean(j.is_mine || j.owner === sshUser),
+          is_mine: Boolean(j.is_mine || (sshUser && j.owner === sshUser)),
           is_group: Boolean(j.is_group),
           is_teammate: Boolean(j.is_teammate),
           job_count: 1,

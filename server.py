@@ -527,10 +527,11 @@ def _build_priority_payload(
             st["pending_jobs"] += 1
             st["pending_gpus"] += job["gpus"]
 
-    my_user_rows = [r for r in user_rows if r["user"] == ssh_user]
+    # An unknown login name must match nothing, not rows/jobs with an empty user.
+    my_user_rows = [r for r in user_rows if ssh_user and r["user"] == ssh_user]
     my_acct_names = {r["account"] for r in my_user_rows}
     for job in all_jobs:
-        if job["owner"] == ssh_user and job.get("account"):
+        if ssh_user and job["owner"] == ssh_user and job.get("account"):
             my_acct_names.add(job["account"])
 
     my_group_accounts = sorted(my_acct_names - _GENERIC_SHARED_ACCOUNTS) or sorted(my_acct_names)
@@ -543,7 +544,7 @@ def _build_priority_payload(
             group_member_users.add(job["owner"])
 
     for job in all_jobs:
-        is_mine = job["owner"] == ssh_user
+        is_mine = bool(ssh_user) and job["owner"] == ssh_user
         is_group = (job.get("account") in my_group_acct_set) or (job["owner"] in group_member_users)
         job["is_mine"] = is_mine
         job["is_group"] = is_group
@@ -567,7 +568,7 @@ def _build_priority_payload(
         group_members.append({
             "user": m_user,
             "account": m_acct,
-            "is_me": m_user == ssh_user,
+            "is_me": bool(ssh_user) and m_user == ssh_user,
             "raw_usage": row["raw_usage"],
             "raw_usage_hours": row["raw_usage_hours"],
             "account_raw_usage_hours": row.get("account_raw_usage_hours", 0.0),
@@ -983,10 +984,17 @@ def _parse_df_line(value: str, path: str) -> dict | None:
     }
 
 
-_STORAGE_INIT_COMMAND = r'''printf 'USER|'; id -un; printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1 '''
+# The login name drives every "is this mine" decision, so try several sources
+# and always terminate the line: a bare `id -un` that prints nothing would
+# otherwise glue the next marker onto the USER| line.
+_STORAGE_INIT_COMMAND = (
+    r'''madar_u=$(id -un 2>/dev/null); [ -n "$madar_u" ] || madar_u=$(whoami 2>/dev/null); '''
+    r'''[ -n "$madar_u" ] || madar_u=${USER:-$LOGNAME}; printf 'USER|%s\n' "$madar_u"; '''
+    r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1 '''
+)
 _DU_REMOTE_COMMAND = r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'HOME_DIRS|\n'; for d in "$HOME"/.[!.]* "$HOME"/*; do [ -e "$d" ] && [ ! -L "$d" ] && (timeout 35 du -sk -x "$d" 2>/dev/null &); done; wait; true'''
 _DU_LOCK = threading.Lock()
-_INIT_FS_CACHE: dict = {"initialized": False, "user": "user", "home_path": "~", "df_home": None}
+_INIT_FS_CACHE: dict = {"initialized": False, "user": "", "home_path": "~", "df_home": None}
 _DU_CACHE: dict = {"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False}
 _DU_REFRESH_SECONDS = 1800  # 30 minutes
 JOB_LIST_LIMIT = 300  # jobs sent to the browser, before own/group jobs are appended
@@ -1140,6 +1148,14 @@ def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _clean_login_name(value: str) -> str:
+    """Return ``value`` if it looks like a login name, else ``""``."""
+    name = (value or "").strip()
+    if not name or "|" in name or any(ch.isspace() for ch in name):
+        return ""
+    return name
+
+
 def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
     if raw:
         user = _INIT_FS_CACHE["user"]
@@ -1148,11 +1164,13 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
         for line in raw.splitlines():
             key, _, value = line.partition("|")
             if key == "USER":
-                user = value.strip() or user
+                user = _clean_login_name(value) or user
             elif key == "HOME_PATH":
                 home_path = value.strip() or home_path
             elif key == "DF_HOME":
                 df_home = _parse_df_line(value, home_path)
+        # Last resort: the login name we connected with, when one is configured.
+        user = user or _clean_login_name(SSH_USER)
         if df_home:
             _INIT_FS_CACHE.update({
                 "initialized": True,
@@ -1204,7 +1222,8 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
 
 
 def _collect_ssh_metrics(force_du: bool = False) -> dict:
-    need_init_fs = not _INIT_FS_CACHE["initialized"]
+    # Re-probe while the login name is still unknown, so a transient failure heals.
+    need_init_fs = not _INIT_FS_CACHE["initialized"] or not _INIT_FS_CACHE["user"]
     probe_command = (
         r'''printf '__MADAR_PARTITIONS__\n'; scontrol show partition -o 2>/dev/null; '''
         r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; '''
@@ -1268,7 +1287,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         all_jobs=all_jobs,
         accounts_share=accounts_share,
         user_rows=user_rows,
-        ssh_user=storage.get("user", "user"),
+        ssh_user=storage.get("user", ""),
         partitions_map=partitions_map,
         assoc_limits=_parse_assoc_limits("\n".join(sections["assoc"])),
     )
@@ -1348,7 +1367,7 @@ def update_settings(data: dict) -> dict:
             except (TypeError, ValueError):
                 pass
         _CACHE.update({"at": 0.0, "payload": None})
-        _INIT_FS_CACHE.update({"initialized": False, "user": "user", "home_path": "~", "df_home": None})
+        _INIT_FS_CACHE.update({"initialized": False, "user": "", "home_path": "~", "df_home": None})
     with _DU_LOCK:
         _DU_CACHE.update({"at": 0.0, "home_kb": 0, "subdirs": [], "scanning": False})
     return get_settings()
