@@ -660,7 +660,6 @@ function renderStatsAndOverview() {
   if (!isLive) {
     $("#sidebarUser").textContent = "SSH User";
     $("#sidebarHome").textContent = disconnText;
-    $("#sidebarAvatar").textContent = "U";
     $("#gpuOnline").textContent = "—";
     $("#gpuTotal").textContent = "—";
     $("#gpuNavCount").textContent = "—";
@@ -735,7 +734,6 @@ function renderStatsAndOverview() {
   const homePath = storage.home_path || (sshUser ? `/home/${sshUser}` : "~");
   $("#sidebarUser").textContent = sshUserText;
   $("#sidebarHome").textContent = homePath;
-  $("#sidebarAvatar").textContent = sshUser ? sshUser.slice(0, 1).toUpperCase() : "?";
 
   const totalGpus = Number(cluster.gpu_total) || gpus.length || 0;
   const onlineGpus = Number(cluster.gpu_online) || 0;
