@@ -706,6 +706,34 @@
               <button class="text-button" data-view="jobs" data-i18n-html="prio.gotoJobsBtn">查看完整任务队列 <span>→</span></button>
             </div>
           </article>
+
+          <article class="panel prio-qos-panel" id="prioQosPanel" hidden>
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">SLURM SACCTMGR / QUALITY OF SERVICE</p>
+                <h2 data-i18n="prio.qosPanelTitle">QoS 档位与每用户上限</h2>
+              </div>
+              <span class="small-muted" id="prioQosMine">—</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th data-i18n="prio.qosThName">QoS</th>
+                    <th data-i18n="prio.qosThAccess">我能否使用</th>
+                    <th data-i18n="prio.qosThWall">最长运行时间</th>
+                    <th data-i18n="prio.qosThRun">每用户运行上限</th>
+                    <th data-i18n="prio.qosThSubmit">每用户提交上限</th>
+                    <th data-i18n="prio.qosThMine">我的任务（运行 / 已提交）</th>
+                  </tr>
+                </thead>
+                <tbody id="prioQosTable"></tbody>
+              </table>
+            </div>
+            <div class="panel-foot">
+              <span id="prioQosFootNote">—</span>
+            </div>
+          </article>
         </div>
 
         <!-- ==================== VIEW 6: SETTINGS (采集设置独立页) ==================== -->

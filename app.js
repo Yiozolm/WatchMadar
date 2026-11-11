@@ -222,6 +222,13 @@ const I18N_EN = {
     "Data from <code>sshare -P -l</code> · Higher FairShare means less recent compute usage and higher initial priority for new jobs",
   "prio.gotoJobsBtn": "View Full Job Queue <span>→</span>",
 
+  "prio.qosPanelTitle": "QoS Tiers and Per-User Limits",
+  "prio.qosThName": "QoS",
+  "prio.qosThAccess": "Available to me",
+  "prio.qosThWall": "Max run time",
+  "prio.qosThRun": "Max running jobs per user",
+  "prio.qosThSubmit": "Max submitted jobs per user",
+  "prio.qosThMine": "My jobs (running / submitted)",
   "set.panelTitle": "Collector Settings",
   "set.refreshInterval": "Auto-Refresh Interval",
   "set.opt15s": "Every 15 seconds",
@@ -1679,10 +1686,58 @@ function updatePrioritySimulator() {
   }
 }
 
+// Slurm wall time "D-HH:MM:SS" -> "3 天"; an empty value means the QoS sets no limit.
+function formatWallLimit(value) {
+  const match = /^(?:(\d+)-)?(\d+):(\d+):(\d+)$/.exec(String(value || "").trim());
+  if (!match) return value ? String(value) : t("不限", "No limit");
+  const hours = Number(match[1] || 0) * 24 + Number(match[2]);
+  if (hours && hours % 24 === 0) return isEn() ? `${hours / 24} d` : `${hours / 24} 天`;
+  return isEn() ? `${hours} h` : `${hours} 小时`;
+}
+
+function renderQosPanel(qosRows, weights) {
+  const panel = $("#prioQosPanel");
+  const rows = qosRows || [];
+  panel.hidden = !rows.length;
+  if (!rows.length) return;
+  const noLimit = `<span style="color:var(--muted-2)">${t("不限", "No limit")}</span>`;
+  const mine = rows.filter((row) => row.available).map((row) => row.name);
+  $("#prioQosMine").textContent = mine.length
+    ? t(`我的账户可用：${mine.join(", ")}`, `Available to my accounts: ${mine.join(", ")}`)
+    : t("未查到我的账户可用的 QoS", "No QoS found for my accounts");
+  $("#prioQosTable").innerHTML = rows
+    .map((row) => {
+      // Usage against a limit: "3 / 50"; without a limit just the count.
+      const usage = (count, max) => (max == null ? `${count}` : `${count} / ${max}`);
+      const full = (count, max) => max != null && count >= max;
+      const mineCell = row.available
+        ? `<span${full(row.my_running, row.max_jobs_per_user) || full(row.my_submitted, row.max_submit_per_user) ? ' style="color:var(--orange);font-weight:600"' : ""}>${usage(row.my_running, row.max_jobs_per_user)} · ${usage(row.my_submitted, row.max_submit_per_user)}</span>`
+        : `<span style="color:var(--muted-2)">—</span>`;
+      return `<tr${row.available ? ' style="background:rgba(56,214,161,.04)"' : ""}>
+        <td><strong>${escapeHtml(row.name)}</strong></td>
+        <td>${row.available ? `<span class="mine-pill">${t("可用", "Yes")}</span>` : `<span style="color:var(--muted-2)">${t("未开通", "No")}</span>`}</td>
+        <td>${escapeHtml(formatWallLimit(row.max_wall))}</td>
+        <td>${row.max_jobs_per_user == null ? noLimit : row.max_jobs_per_user}</td>
+        <td>${row.max_submit_per_user == null ? noLimit : row.max_submit_per_user}</td>
+        <td>${mineCell}</td>
+      </tr>`;
+    })
+    .join("");
+  const notes = [
+    t("数据来自 <code>sacctmgr show qos</code>；任务数统计的是我在所有分区的任务", "From <code>sacctmgr show qos</code>; job counts cover my jobs in every partition"),
+    t("QoS 不设时限时仍受分区上限（72 小时）约束", "Without a QoS time limit the partition limit (72 h) still applies"),
+  ];
+  if (!Number(weights?.qos)) {
+    notes.push(t("QoS 权重为 0，档位不影响排队优先级", "The QoS weight is 0, so the tier does not affect queue priority"));
+  }
+  $("#prioQosFootNote").innerHTML = notes.join(" · ");
+}
+
 function renderPriorityPage() {
   const { cluster, storage, jobs = [], priority } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh" && priority?.config);
   const disconnText = t("未连接", "Disconnected");
+  renderQosPanel(isLive ? priority.qos : [], priority?.config?.weights);
   if (!isLive) {
     $("#prioCardMine").textContent = "—";
     $("#prioCardMineBreakdown").textContent = disconnText;

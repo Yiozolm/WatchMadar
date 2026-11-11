@@ -353,6 +353,50 @@ def _parse_sshare(
     return accounts_share, user_rows
 
 
+def _build_qos_payload(qos_lines: list[str], my_qos_lines: list[str], my_job_lines: list[str]) -> list[dict]:
+    """Describe every QoS: its limits, whether the user may use it, and how
+    many of the user's jobs currently count against it.
+
+    ``qos_lines`` are ``Name|Priority|MaxWall|MaxJobsPU|MaxSubmitPU`` rows,
+    ``my_qos_lines`` the comma-separated QoS lists of the user's associations
+    and ``my_job_lines`` ``QoS|State`` rows for the user's queued jobs.
+    """
+    allowed = {name.strip() for line in my_qos_lines for name in line.split(",") if name.strip()}
+    running: dict[str, int] = {}
+    submitted: dict[str, int] = {}
+    for line in my_job_lines:
+        name, _, state = line.partition("|")
+        name = name.strip()
+        if not name:
+            continue
+        submitted[name] = submitted.get(name, 0) + 1
+        if state.strip() == "RUNNING":
+            running[name] = running.get(name, 0) + 1
+
+    def limit(value: str) -> int | None:
+        return int(value) if value.strip().isdigit() else None
+
+    rows = []
+    for line in qos_lines:
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 5 or not parts[0]:
+            continue
+        name = parts[0]
+        rows.append({
+            "name": name,
+            "priority": _number(parts[1]),
+            "max_wall": parts[2],
+            "max_jobs_per_user": limit(parts[3]),
+            "max_submit_per_user": limit(parts[4]),
+            "available": name in allowed,
+            "my_running": running.get(name, 0),
+            "my_submitted": submitted.get(name, 0),
+        })
+    # The user's own QoS first, then by QoS priority.
+    rows.sort(key=lambda row: (not row["available"], row["priority"], row["name"]))
+    return rows
+
+
 _SUBMIT_LIMIT_FIELDS = ("GrpJobs", "GrpSubmit", "MaxJobs", "MaxSubmit")
 
 
@@ -1283,6 +1327,11 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         r'''printf '__MADAR_SPRIO__\n'; sprio -h -p gpu,interactive -o "%i|%Y|%A|%F|%J|%P|%Q|%N|%a|%f" 2>/dev/null; '''
         r'''printf '__MADAR_SSHARE__\n'; sshare -a -P -l 2>/dev/null; '''
         r'''printf '__MADAR_PRIO_CFG__\n'; scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)"; '''
+        # QoS definitions, the QoS the user may use, and the user's jobs in
+        # every partition (per-user QoS limits count cluster-wide).
+        r'''printf '__MADAR_QOS__\n'; sacctmgr -nP show qos format=Name,Priority,MaxWall,MaxJobsPU,MaxSubmitPU 2>/dev/null; '''
+        r'''printf '__MADAR_MYQOS__\n'; sacctmgr -nP show assoc user="$(id -un)" format=QOS 2>/dev/null; '''
+        r'''printf '__MADAR_MYJOBS__\n'; squeue -h -u "$(id -un)" -o "%q|%T" 2>/dev/null; '''
         # Job limits for every account plus the current user's own associations.
         r'''printf '__MADAR_ASSOC__\n'; sacctmgr -nP show assoc format=Account,User,ParentName,GrpJobs,GrpSubmit,MaxJobs,MaxSubmit 2>/dev/null '''
         r'''| awk -F'|' -v u="$(id -un)" '$2=="" || $2==u'; true'''
@@ -1291,7 +1340,10 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         probe_command += r'''; printf '__MADAR_STORAGE__\n'; ''' + _STORAGE_INIT_COMMAND
 
     raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 20))
-    sections = {"partitions": [], "nodes": [], "queue": [], "sprio": [], "sshare": [], "prio_cfg": [], "assoc": [], "storage": []}
+    sections = {
+        "partitions": [], "nodes": [], "queue": [], "sprio": [], "sshare": [], "prio_cfg": [],
+        "qos": [], "my_qos": [], "my_jobs": [], "assoc": [], "storage": [],
+    }
     current = None
     for line in raw.splitlines():
         marker = {
@@ -1301,6 +1353,9 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
             "__MADAR_SPRIO__": "sprio",
             "__MADAR_SSHARE__": "sshare",
             "__MADAR_PRIO_CFG__": "prio_cfg",
+            "__MADAR_QOS__": "qos",
+            "__MADAR_MYQOS__": "my_qos",
+            "__MADAR_MYJOBS__": "my_jobs",
             "__MADAR_ASSOC__": "assoc",
             "__MADAR_STORAGE__": "storage",
         }.get(line.strip())
@@ -1343,6 +1398,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         partitions_map=partitions_map,
         assoc_limits=_parse_assoc_limits("\n".join(sections["assoc"])),
     )
+    priority_payload["qos"] = _build_qos_payload(sections["qos"], sections["my_qos"], sections["my_jobs"])
     # Cap the payload, but never drop the user's own or their group's jobs:
     # low-priority pending jobs sort past the cap on a busy queue.
     jobs = all_jobs[:JOB_LIST_LIMIT] + [
