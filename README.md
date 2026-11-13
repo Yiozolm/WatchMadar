@@ -24,7 +24,14 @@ uv pip install --python .\.venv\Scripts\python.exe pyinstaller
 
 # 如需最快的冷启动速度，也可构建目录版 dist\MadarDashboard\MadarDashboard.exe
 .\.venv\Scripts\python.exe build_exe.py --onedir
+
+# 发给别人用：目录版并打包成 dist\MadarDashboard-<版本>-win64.zip（解压即用，启动最快）
+.\.venv\Scripts\python.exe build_exe.py --onedir --zip
 ```
+
+- 版本号取自 `server.py` 中的 `APP_VERSION`，会写入 exe 的"属性 → 详细信息"。
+- 图标由 `logo.png` 自动生成多尺寸 `madar.ico`（16–256px，不超过原图尺寸）。换成 256×256 的 `logo.png` 后，资源管理器大图标会更清晰。
+- 默认增量构建；更换 venv 或依赖后加 `--clean` 重新分析。若提示 exe 被占用，请先从托盘退出正在运行的程序。
 
 运行 `MadarDashboard.exe` 时：
 

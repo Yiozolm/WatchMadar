@@ -136,6 +136,10 @@ user32.LoadImageW.argtypes = [
     wintypes.UINT,
 ]
 user32.LoadImageW.restype = wintypes.HANDLE
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.GetSystemMetrics.restype = ctypes.c_int
+SM_CXSMICON = 49
+SM_CYSMICON = 50
 user32.LoadIconW.argtypes = [HINSTANCE, wintypes.LPCWSTR]
 user32.LoadIconW.restype = HICON
 user32.DestroyIcon.argtypes = [HICON]
@@ -297,13 +301,16 @@ class TrayController:
 
     def _load_icon(self) -> HICON:
         if self.icon_path and self.icon_path.exists():
+            # The tray uses the *small* icon size (16px at 100% DPI, 24px at 150%, ...).
+            # LR_DEFAULTSIZE would pick the 32px large-icon size and let the shell
+            # shrink it, which looks blurry; ask for the exact frame from the .ico instead.
             icon = user32.LoadImageW(
                 None,
                 str(self.icon_path),
                 IMAGE_ICON,
-                0,
-                0,
-                LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                user32.GetSystemMetrics(SM_CXSMICON),
+                user32.GetSystemMetrics(SM_CYSMICON),
+                LR_LOADFROMFILE,
             )
             if icon:
                 self._hicon_owned = True

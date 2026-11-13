@@ -31,6 +31,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 
+APP_VERSION = "1.0.0"  # Also embedded in the .exe's version resource by build_exe.py
+
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ROOT = BUNDLE_DIR
