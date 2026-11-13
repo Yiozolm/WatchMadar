@@ -11,6 +11,28 @@ python server.py
 
 然后访问启动时终端打印的地址（默认 <http://127.0.0.1:8766>）。服务会从 8766 开始向上探测第一个未被占用的端口，起始端口可用环境变量 `MADAR_DASHBOARD_PORT` 修改。页面默认每 **1 分钟**自动通过 SSH 刷新（可在"采集设置"里改为 15 秒到 5 分钟，或暂停），也可以点击右上角按钮立即刷新。默认使用 `~/.ssh/config` 中名为 `madar` 的主机别名。
 
+## 打包为独立 EXE（Windows）
+
+项目内置了零第三方运行时依赖的打包支持（系统托盘与单实例检测基于 Windows 原生 `ctypes`）：
+
+```powershell
+# 安装构建工具（仅打包时需要）
+uv pip install --python .\.venv\Scripts\python.exe pyinstaller
+
+# 生成单文件可执行程序 dist\MadarDashboard.exe
+.\.venv\Scripts\python.exe build_exe.py
+
+# 如需最快的冷启动速度，也可构建目录版 dist\MadarDashboard\MadarDashboard.exe
+.\.venv\Scripts\python.exe build_exe.py --onedir
+```
+
+运行 `MadarDashboard.exe` 时：
+
+- 无黑框弹窗（后台 `ssh.exe` 调用已禁用控制台窗口），启动后自动打开浏览器并驻留 Windows 系统托盘。
+- 支持单实例保护：再次双击会直接打开已运行实例的页面，不会重复启动 SSH 采集。
+- 支持命令行参数：`--port`、`--host`、`--no-browser`、`--no-tray`。
+- 配置文件 `settings.local.json` 优先保存在 `.exe` 同级目录；若该目录不可写，则自动保存到 `%LOCALAPPDATA%\MadarDashboard\settings.local.json`。
+
 ## SSH 配置
 
 可以直接使用已有 SSH 别名：

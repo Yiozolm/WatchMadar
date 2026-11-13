@@ -11,6 +11,9 @@ server keeps a short cache so a slow filesystem scan cannot pile up requests.
 
 from __future__ import annotations
 
+import argparse
+import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -18,15 +21,73 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
+import webbrowser
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 
-ROOT = Path(__file__).resolve().parent
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ROOT = BUNDLE_DIR
+APP_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent
+
+
+def _resolve_data_dir() -> Path:
+    """Return a writable directory for persistent settings, state and logs."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "MadarDashboard"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "madar-dashboard"
+
+
+def _is_dir_writable(directory: Path) -> bool:
+    try:
+        probe = directory / f".madar_write_test_{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _resolve_settings_file() -> Path:
+    explicit = os.environ.get("MADAR_SETTINGS_FILE")
+    if explicit:
+        return Path(explicit)
+    local_candidate = APP_DIR / "settings.local.json"
+    if local_candidate.exists() or _is_dir_writable(APP_DIR):
+        return local_candidate
+    data_dir = _resolve_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir / "settings.local.json"
+
+
+def _configure_stdio_for_gui() -> None:
+    """Ensure stdout/stderr are valid streams when running without a console (--noconsole)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_dir = _resolve_data_dir()
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "dashboard.log"
+        if log_path.exists() and log_path.stat().st_size > 262_144:
+            backup = log_dir / "dashboard.log.old"
+            log_path.replace(backup)
+        stream = open(log_path, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        stream = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
+DATA_DIR = _resolve_data_dir()
 HOST = os.environ.get("MADAR_DASHBOARD_HOST", "127.0.0.1")
 # First port to try; the server probes upward from here until one is free.
 PORT = int(os.environ.get("MADAR_DASHBOARD_PORT", "8766"))
@@ -39,13 +100,28 @@ SSH_CONFIG = os.environ.get("MADAR_SSH_CONFIG", str(Path.home() / ".ssh" / "conf
 SSH_BIN = os.environ.get("MADAR_SSH_BIN", "")
 # Settings saved from the dashboard. They override the environment defaults
 # above on the next start; delete the file to go back to the environment.
-SETTINGS_FILE = Path(os.environ.get("MADAR_SETTINGS_FILE", str(ROOT / "settings.local.json")))
+SETTINGS_FILE = _resolve_settings_file()
 REFRESH_MS_CHOICES = (0, 15000, 30000, 60000, 120000, 300000)
 REFRESH_MS = 60000  # browser auto-refresh interval; 0 pauses it
+_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 _CACHE_LOCK = threading.Lock()
-_SSH_LOCK = threading.Lock()
-_CACHE: dict = {"at": 0.0, "payload": None}
+_PROBE_COND = threading.Condition()
+_PROBE_IN_FLIGHT = False
+_CACHE: dict = {"at": 0.0, "du_at": 0.0, "payload": None, "json_bytes": b"", "gzip_bytes": b"", "swr_json": b"", "swr_gzip": b""}
+_STATIC_SLURM_TTL = 600.0  # 10 minutes for partition/config/QoS metadata
+_STATIC_SLURM_CACHE: dict = {"at": 0.0, "partitions": "", "prio_cfg": "", "qos": []}
+_CACHE_TTL_CONNECTED = 50.0
+_CACHE_TTL_DISCONNECTED = 8.0
+_CACHE_STALE_TTL = 180.0
+
+_KV_RE = re.compile(r"([A-Za-z][A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)")
+_GRES_GPU_RE = re.compile(r"gpu(?::[^:,\s]+)*:(\d+)")
+_TRES_GPU_RE = re.compile(r"(?:^|,)gres/gpu=(\d+)")
+_REQ_GPU_RE = re.compile(r"(?:gpu:)[^:|]+:(\d+)$")
+_REQ_GPU_SIMPLE_RE = re.compile(r"gpu:(\d+)")
+_REASON_BRACKET_RE = re.compile(r"\s*\[[^\]]*\]\s*$")
+_OCTAL_ESCAPE_RE = re.compile(r"(\\\d{3})+")
 
 
 def _find_ssh() -> str:
@@ -132,6 +208,7 @@ def _run_remote(command: str, timeout: float | None = None) -> str:
         errors="replace",
         timeout=timeout or SSH_TIMEOUT,
         check=False,
+        creationflags=_SUBPROCESS_FLAGS,
     )
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip().replace("\n", " ")
@@ -155,25 +232,25 @@ def _float(value: str | None, default: float = 0.0) -> float:
 
 def _parse_kv_line(line: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for match in re.finditer(r"([A-Za-z][A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)", line):
+    for match in _KV_RE.finditer(line):
         fields[match.group(1)] = match.group(2).strip()
     return fields
 
 
 def _gpu_count_from_gres(gres: str) -> int:
-    match = re.search(r"gpu(?::[^:,\s]+)*:(\d+)", gres or "")
+    match = _GRES_GPU_RE.search(gres or "")
     return _number(match.group(1) if match else "0")
 
 
 def _gpu_count_from_tres(tres: str) -> int:
-    match = re.search(r"(?:^|,)gres/gpu=(\d+)", tres or "")
+    match = _TRES_GPU_RE.search(tres or "")
     return _number(match.group(1) if match else "0")
 
 
 def _gpu_request(value: str) -> int:
-    match = re.search(r"(?:gpu:)[^:|]+:(\d+)$", value or "")
+    match = _REQ_GPU_RE.search(value or "")
     if not match:
-        match = re.search(r"gpu:(\d+)", value or "")
+        match = _REQ_GPU_SIMPLE_RE.search(value or "")
     return max(_number(match.group(1) if match else "0"), 1 if "gpu" in (value or "") else 0)
 
 
@@ -569,7 +646,11 @@ def _build_priority_payload(
     assoc_limits: dict | None = None,
 ) -> dict:
     acct_job_stats: dict[str, dict] = {}
+    jobs_by_owner: dict[str, list[dict]] = {}
+    my_acct_job_counts: dict[str, list[int]] = {}
     for job in all_jobs:
+        owner = job["owner"]
+        jobs_by_owner.setdefault(owner, []).append(job)
         acct = job.get("account") or ""
         if not acct:
             continue
@@ -577,20 +658,29 @@ def _build_priority_payload(
             acct,
             {"running_jobs": 0, "running_gpus": 0, "pending_jobs": 0, "pending_gpus": 0, "users": set()},
         )
-        st["users"].add(job["owner"])
-        if job["status"] == "RUNNING":
+        st["users"].add(owner)
+        is_running = job["status"] == "RUNNING"
+        if is_running:
             st["running_jobs"] += 1
             st["running_gpus"] += job["gpus"]
         else:
             st["pending_jobs"] += 1
             st["pending_gpus"] += job["gpus"]
+        if ssh_user and owner == ssh_user:
+            counts = my_acct_job_counts.setdefault(acct, [0, 0, 0])
+            if is_running:
+                counts[0] += 1
+            else:
+                counts[1] += 1
+                counts[2] += job["gpus"]
 
     # An unknown login name must match nothing, not rows/jobs with an empty user.
     my_user_rows = [r for r in user_rows if ssh_user and r["user"] == ssh_user]
     my_acct_names = {r["account"] for r in my_user_rows}
-    for job in all_jobs:
-        if ssh_user and job["owner"] == ssh_user and job.get("account"):
-            my_acct_names.add(job["account"])
+    if ssh_user:
+        for job in jobs_by_owner.get(ssh_user, ()):
+            if job.get("account"):
+                my_acct_names.add(job["account"])
 
     my_group_accounts = sorted(my_acct_names - _GENERIC_SHARED_ACCOUNTS) or sorted(my_acct_names)
     my_group_acct_set = set(my_group_accounts)
@@ -616,11 +706,18 @@ def _build_priority_payload(
         if not m_user or (m_acct, m_user) in seen_members:
             continue
         seen_members.add((m_acct, m_user))
-        m_jobs = [j for j in all_jobs if j["owner"] == m_user]
-        m_run_jobs = sum(1 for j in m_jobs if j["status"] == "RUNNING")
-        m_run_gpus = sum(j["gpus"] for j in m_jobs if j["status"] == "RUNNING")
-        m_pend_jobs = sum(1 for j in m_jobs if j["status"] != "RUNNING")
-        m_pend_gpus = sum(j["gpus"] for j in m_jobs if j["status"] != "RUNNING")
+        m_jobs = jobs_by_owner.get(m_user, ())
+        m_run_jobs = 0
+        m_run_gpus = 0
+        m_pend_jobs = 0
+        m_pend_gpus = 0
+        for j in m_jobs:
+            if j["status"] == "RUNNING":
+                m_run_jobs += 1
+                m_run_gpus += j["gpus"]
+            else:
+                m_pend_jobs += 1
+                m_pend_gpus += j["gpus"]
         acct_raw = max(row.get("account_raw_usage", 0), 1)
         usage_share_pct = round(min((row["raw_usage"] / acct_raw) * 100.0, 100.0), 1) if row.get("account_raw_usage", 0) > 0 else 0.0
         group_members.append({
@@ -683,9 +780,7 @@ def _build_priority_payload(
         if acct_name in seen_user_accts:
             continue
         seen_user_accts.add(acct_name)
-        my_running = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] == "RUNNING")
-        my_pending = sum(1 for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
-        my_pending_gpus = sum(j["gpus"] for j in all_jobs if j["owner"] == ssh_user and j.get("account") == acct_name and j["status"] != "RUNNING")
+        my_running, my_pending, my_pending_gpus = my_acct_job_counts.get(acct_name, (0, 0, 0))
         grp_st = acct_job_stats.get(acct_name, {"running_jobs": 0, "running_gpus": 0, "pending_jobs": 0, "pending_gpus": 0})
         submit_block = _submit_block(assoc_limits, acct_name, ssh_user)
         enriched_user_accounts.append({
@@ -859,7 +954,7 @@ def _classify_node_state(
     reason_raw = (reason or "").strip()
     if reason_raw.lower() in {"none", "(null)"}:
         reason_raw = ""
-    reason_short = re.sub(r"\s*\[[^\]]*\]\s*$", "", reason_raw).strip()
+    reason_short = _REASON_BRACKET_RE.sub("", reason_raw).strip()
     parts_list = node_partitions or []
     pmap = partitions_map or {}
 
@@ -1183,12 +1278,7 @@ def _parse_and_store_du(raw: str, fallback_home: str = "~") -> None:
         })
 
 
-def _sync_du_into_payload(payload: dict) -> None:
-    if not payload or not payload.get("cluster", {}).get("connected"):
-        return
-    storage = payload.get("storage")
-    if not storage:
-        return
+def _build_storage_with_du(storage: dict) -> dict:
     with _DU_LOCK:
         home_kb = _DU_CACHE["home_kb"]
         subdirs = list(_DU_CACHE["subdirs"])
@@ -1196,15 +1286,31 @@ def _sync_du_into_payload(payload: dict) -> None:
     home_used_bytes = home_kb * 1024
     home_used_gb = round(home_used_bytes / 1e9, 6)
     home_used_tb = round(home_used_bytes / 1e12, 6)
-    storage["scanning"] = scanning
-    storage["home_used_gb"] = home_used_gb
-    storage["home_used_tb"] = home_used_tb
-    storage["home_quota_gb"] = USER_HOME_QUOTA_GB
-    storage["home_avail_gb"] = max(round(USER_HOME_QUOTA_GB - home_used_gb, 6), 0.0)
-    storage["used_tb"] = home_used_tb
-    storage["quota_tb"] = USER_HOME_QUOTA_TB
-    storage["subdirs"] = subdirs
-    storage["paths"] = _build_user_paths(home_used_gb, subdirs, USER_HOME_QUOTA_GB)
+    updated = dict(storage)
+    updated["scanning"] = scanning
+    updated["home_used_gb"] = home_used_gb
+    updated["home_used_tb"] = home_used_tb
+    updated["home_quota_gb"] = USER_HOME_QUOTA_GB
+    updated["home_avail_gb"] = max(round(USER_HOME_QUOTA_GB - home_used_gb, 6), 0.0)
+    updated["used_tb"] = home_used_tb
+    updated["quota_tb"] = USER_HOME_QUOTA_TB
+    updated["subdirs"] = subdirs
+    updated["paths"] = _build_user_paths(home_used_gb, subdirs, USER_HOME_QUOTA_GB)
+    return updated
+
+
+def _sync_du_into_payload(payload: dict) -> dict:
+    """Return a copy of ``payload`` synced with the latest ``_DU_CACHE``."""
+    if not payload or not payload.get("cluster", {}).get("connected"):
+        return payload
+    storage = payload.get("storage")
+    if not storage:
+        return payload
+    new_storage = _build_storage_with_du(storage)
+    new_cluster = dict(payload["cluster"])
+    new_cluster["storage_used_tb"] = new_storage["used_tb"]
+    new_cluster["storage_total_tb"] = new_storage["quota_tb"]
+    return {**payload, "cluster": new_cluster, "storage": new_storage}
 
 
 def _trigger_du_scan(home_path: str = "~", force: bool = False) -> None:
@@ -1317,59 +1423,107 @@ def _collect_storage(raw: str | None = None, force_du: bool = False) -> dict:
     }
 
 
-def _collect_ssh_metrics(force_du: bool = False) -> dict:
+def _collect_ssh_metrics(force_du: bool = False, force_static: bool = False) -> dict:
     # Re-probe while the login name is still unknown, so a transient failure heals.
-    need_init_fs = not _INIT_FS_CACHE["initialized"] or not _INIT_FS_CACHE["user"]
-    probe_command = (
-        r'''printf '__MADAR_PARTITIONS__\n'; scontrol show partition -o 2>/dev/null; '''
-        r'''printf '__MADAR_NODES__\n'; scontrol show node -o 2>/dev/null; '''
-        r'''printf '__MADAR_QUEUE__\n'; squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r|%Q|%a|%q|%l" 2>/dev/null; '''
-        r'''printf '__MADAR_SPRIO__\n'; sprio -h -p gpu,interactive -o "%i|%Y|%A|%F|%J|%P|%Q|%N|%a|%f" 2>/dev/null; '''
-        r'''printf '__MADAR_SSHARE__\n'; sshare -a -P -l 2>/dev/null; '''
-        r'''printf '__MADAR_PRIO_CFG__\n'; scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)"; '''
-        # QoS definitions, the QoS the user may use, and the user's jobs in
-        # every partition (per-user QoS limits count cluster-wide).
-        r'''printf '__MADAR_QOS__\n'; sacctmgr -nP show qos format=Name,Priority,MaxWall,MaxJobsPU,MaxSubmitPU 2>/dev/null; '''
-        r'''printf '__MADAR_MYQOS__\n'; sacctmgr -nP show assoc user="$(id -un)" format=QOS 2>/dev/null; '''
-        r'''printf '__MADAR_MYJOBS__\n'; squeue -h -u "$(id -un)" -o "%q|%T" 2>/dev/null; '''
-        # Job limits for every account plus the current user's own associations.
-        r'''printf '__MADAR_ASSOC__\n'; sacctmgr -nP show assoc format=Account,User,ParentName,GrpJobs,GrpSubmit,MaxJobs,MaxSubmit 2>/dev/null '''
-        r'''| awk -F'|' -v u="$(id -un)" '$2=="" || $2==u'; true'''
-    )
+    with _CACHE_LOCK:
+        need_init_fs = not _INIT_FS_CACHE["initialized"] or not _INIT_FS_CACHE["user"]
+        static_age = time.monotonic() - _STATIC_SLURM_CACHE["at"]
+        need_static = force_static or _STATIC_SLURM_CACHE["at"] == 0.0 or static_age >= _STATIC_SLURM_TTL
+        cached_partitions = _STATIC_SLURM_CACHE["partitions"]
+        cached_prio_cfg = _STATIC_SLURM_CACHE["prio_cfg"]
+        cached_qos = list(_STATIC_SLURM_CACHE["qos"])
+
+    # Run independent Slurm queries in parallel inside a single SSH round-trip.
+    parts = [
+        r'''madar_u=$(id -un 2>/dev/null); [ -n "$madar_u" ] || madar_u=$(whoami 2>/dev/null); '''
+        r'''[ -n "$madar_u" ] || madar_u=${USER:-$LOGNAME}; '''
+        r'''madar_d=$(mktemp -d /tmp/madar.XXXXXX 2>/dev/null || mktemp -d); '''
+        r'''trap 'rm -rf "$madar_d"' EXIT INT TERM; '''
+        r'''scontrol show node -o 2>/dev/null >"$madar_d/nodes" & '''
+        r'''squeue -h -p gpu,interactive -o "%i|%j|%u|%P|%b|%M|%T|%N|%r|%Q|%a|%q|%l" 2>/dev/null >"$madar_d/queue" & '''
+        r'''sprio -h -p gpu,interactive -o "%i|%Y|%A|%F|%J|%P|%Q|%N|%a|%f" 2>/dev/null >"$madar_d/sprio" & '''
+        r'''sshare -a -P -l 2>/dev/null >"$madar_d/sshare" & '''
+        r'''sacctmgr -nP show assoc user="$madar_u" format=QOS 2>/dev/null >"$madar_d/myqos" & '''
+        r'''squeue -h -u "$madar_u" -o "%q|%T" 2>/dev/null >"$madar_d/myjobs" & '''
+        r'''(sacctmgr -nP show assoc format=Account,User,ParentName,GrpJobs,GrpSubmit,MaxJobs,MaxSubmit 2>/dev/null '''
+        r'''| awk -F'|' -v u="$madar_u" '$2=="" || $2==u' >"$madar_d/assoc") & '''
+    ]
+    if need_static:
+        parts.append(
+            r'''scontrol show partition -o 2>/dev/null >"$madar_d/partitions" & '''
+            r'''(scontrol show config 2>/dev/null | grep -E "^(Priority|FairShare|SchedulerType|PreemptMode|AccountingStorageEnforce)" >"$madar_d/prio_cfg") & '''
+            r'''sacctmgr -nP show qos format=Name,Priority,MaxWall,MaxJobsPU,MaxSubmitPU 2>/dev/null >"$madar_d/qos" & '''
+        )
     if need_init_fs:
-        probe_command += r'''; printf '__MADAR_STORAGE__\n'; ''' + _STORAGE_INIT_COMMAND
+        parts.append(
+            r'''(printf 'USER|%s\n' "$madar_u"; '''
+            r'''printf 'HOME_PATH|'; printf '%s\n' "$HOME"; printf 'DF_HOME|'; df -Pk -T "$HOME" 2>/dev/null | tail -1; '''
+            r'''printf '\nDF_PROJECT|'; df -Pk -T /dpc 2>/dev/null | tail -1; printf '\n'; '''
+            r'''for madar_a in $(sacctmgr -nP show assoc user="$madar_u" format=Account 2>/dev/null | sort -u); do '''
+            r'''[ -d "/dpc/$madar_a" ] && printf 'PROJECT_DIR|/dpc/%s\n' "$madar_a"; done) >"$madar_d/storage" 2>/dev/null & '''
+        )
+
+    parts.append(
+        r'''wait; '''
+        r'''printf '__MADAR_NODES__\n'; cat "$madar_d/nodes" 2>/dev/null; '''
+        r'''printf '__MADAR_QUEUE__\n'; cat "$madar_d/queue" 2>/dev/null; '''
+        r'''printf '__MADAR_SPRIO__\n'; cat "$madar_d/sprio" 2>/dev/null; '''
+        r'''printf '__MADAR_SSHARE__\n'; cat "$madar_d/sshare" 2>/dev/null; '''
+        r'''printf '__MADAR_MYQOS__\n'; cat "$madar_d/myqos" 2>/dev/null; '''
+        r'''printf '__MADAR_MYJOBS__\n'; cat "$madar_d/myjobs" 2>/dev/null; '''
+        r'''printf '__MADAR_ASSOC__\n'; cat "$madar_d/assoc" 2>/dev/null'''
+    )
+    if need_static:
+        parts.append(
+            r'''; printf '__MADAR_PARTITIONS__\n'; cat "$madar_d/partitions" 2>/dev/null; '''
+            r'''printf '__MADAR_PRIO_CFG__\n'; cat "$madar_d/prio_cfg" 2>/dev/null; '''
+            r'''printf '__MADAR_QOS__\n'; cat "$madar_d/qos" 2>/dev/null'''
+        )
+    if need_init_fs:
+        parts.append(r'''; printf '__MADAR_STORAGE__\n'; cat "$madar_d/storage" 2>/dev/null''')
+    parts.append("; true")
+    probe_command = "".join(parts)
 
     raw = _run_remote(probe_command, timeout=max(SSH_TIMEOUT, 20))
     sections = {
         "partitions": [], "nodes": [], "queue": [], "sprio": [], "sshare": [], "prio_cfg": [],
         "qos": [], "my_qos": [], "my_jobs": [], "assoc": [], "storage": [],
     }
+    marker_map = {
+        "__MADAR_PARTITIONS__": "partitions",
+        "__MADAR_NODES__": "nodes",
+        "__MADAR_QUEUE__": "queue",
+        "__MADAR_SPRIO__": "sprio",
+        "__MADAR_SSHARE__": "sshare",
+        "__MADAR_PRIO_CFG__": "prio_cfg",
+        "__MADAR_QOS__": "qos",
+        "__MADAR_MYQOS__": "my_qos",
+        "__MADAR_MYJOBS__": "my_jobs",
+        "__MADAR_ASSOC__": "assoc",
+        "__MADAR_STORAGE__": "storage",
+    }
     current = None
     for line in raw.splitlines():
-        marker = {
-            "__MADAR_PARTITIONS__": "partitions",
-            "__MADAR_NODES__": "nodes",
-            "__MADAR_QUEUE__": "queue",
-            "__MADAR_SPRIO__": "sprio",
-            "__MADAR_SSHARE__": "sshare",
-            "__MADAR_PRIO_CFG__": "prio_cfg",
-            "__MADAR_QOS__": "qos",
-            "__MADAR_MYQOS__": "my_qos",
-            "__MADAR_MYJOBS__": "my_jobs",
-            "__MADAR_ASSOC__": "assoc",
-            "__MADAR_STORAGE__": "storage",
-        }.get(line.strip())
+        marker = marker_map.get(line.strip())
         if marker:
             current = marker
             continue
         if current:
             sections[current].append(line)
-    partitions_raw = "\n".join(sections["partitions"])
+
+    if need_static:
+        partitions_raw = "\n".join(sections["partitions"])
+        prio_cfg_raw = "\n".join(sections["prio_cfg"])
+        qos_lines = sections["qos"]
+    else:
+        partitions_raw = cached_partitions
+        prio_cfg_raw = cached_prio_cfg
+        qos_lines = cached_qos
+
     nodes_raw = "\n".join(sections["nodes"])
     queue_raw = "\n".join(sections["queue"])
     sprio_raw = "\n".join(sections["sprio"])
     sshare_raw = "\n".join(sections["sshare"])
-    prio_cfg_raw = "\n".join(sections["prio_cfg"])
     storage_raw = "\n".join(sections["storage"]) if need_init_fs else None
 
     partitions_map = _parse_partitions(partitions_raw)
@@ -1388,6 +1542,14 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
     nodes, gpus = _parse_nodes(nodes_raw, all_jobs, partitions_map)
     if not nodes:
         raise RuntimeError("no GPU nodes were returned by Slurm")
+    if need_static:
+        with _CACHE_LOCK:
+            _STATIC_SLURM_CACHE.update({
+                "at": time.monotonic(),
+                "partitions": partitions_raw,
+                "prio_cfg": prio_cfg_raw,
+                "qos": list(qos_lines),
+            })
     storage = _collect_storage(storage_raw, force_du=force_du)
     priority_payload = _build_priority_payload(
         config=prio_config,
@@ -1398,7 +1560,7 @@ def _collect_ssh_metrics(force_du: bool = False) -> dict:
         partitions_map=partitions_map,
         assoc_limits=_parse_assoc_limits("\n".join(sections["assoc"])),
     )
-    priority_payload["qos"] = _build_qos_payload(sections["qos"], sections["my_qos"], sections["my_jobs"])
+    priority_payload["qos"] = _build_qos_payload(qos_lines, sections["my_qos"], sections["my_jobs"])
     # Cap the payload, but never drop the user's own or their group's jobs:
     # low-priority pending jobs sort past the cap on a busy queue.
     jobs = all_jobs[:JOB_LIST_LIMIT] + [
@@ -1530,17 +1692,26 @@ def _save_settings() -> str:
     return ""
 
 
+_CACHE_GEN = 0
+
+
 def _connection_settings() -> tuple:
     return (SSH_HOST, SSH_USER, SSH_PORT, SSH_TIMEOUT)
 
 
 def update_settings(data: dict) -> dict:
+    global _CACHE_GEN
     with _CACHE_LOCK:
         before = _connection_settings()
         _apply_settings(data)
         connection_changed = _connection_settings() != before
         if connection_changed:
-            _CACHE.update({"at": 0.0, "payload": None})
+            _CACHE_GEN += 1
+            _CACHE.update({
+                "at": 0.0, "du_at": 0.0, "payload": None,
+                "json_bytes": b"", "gzip_bytes": b"", "swr_json": b"", "swr_gzip": b"",
+            })
+            _STATIC_SLURM_CACHE.update({"at": 0.0, "partitions": "", "prio_cfg": "", "qos": []})
             _INIT_FS_CACHE.update({"initialized": False, "user": "", "home_path": "~", "df_home": None, "project": None})
         save_error = _save_settings()
     if connection_changed:
@@ -1611,6 +1782,7 @@ def test_connection(data: dict) -> dict:
             errors="replace",
             timeout=timeout,
             check=False,
+            creationflags=_SUBPROCESS_FLAGS,
         )
     except subprocess.TimeoutExpired:
         return failure("timeout", f"no answer within {timeout:g}s", elapsed_ms())
@@ -1620,7 +1792,7 @@ def test_connection(data: dict) -> dict:
     if completed.returncode:
         detail = " ".join((completed.stderr or completed.stdout).split())
         # Windows ssh prints localized system messages as octal escapes.
-        detail = re.sub(r"(\\\d{3})+", "", detail).strip(" :")
+        detail = _OCTAL_ESCAPE_RE.sub("", detail).strip(" :")
         return failure(_classify_ssh_error(detail), detail, elapsed_ms())
 
     fields = dict(line.split("|", 1) for line in completed.stdout.splitlines() if "|" in line)
@@ -1633,40 +1805,217 @@ def test_connection(data: dict) -> dict:
     }
 
 
-def load_metrics(force: bool = False) -> dict:
-    """Probe Madar over SSH and return disconnected state on failure."""
-    now = time.monotonic()
-    with _CACHE_LOCK:
-        cached = _CACHE["payload"]
-        ttl = 50 if (cached and cached.get("cluster", {}).get("connected")) else 8
-        if not force and cached is not None and now - _CACHE["at"] < ttl:
-            _sync_du_into_payload(cached)
-            return cached
+def _encode_payload(payload: dict) -> tuple[bytes, bytes]:
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return raw, gzip.compress(raw, compresslevel=5)
+
+
+def _current_du_at() -> float:
+    with _DU_LOCK:
+        return float(_DU_CACHE["at"])
+
+
+def _store_cache_locked(payload: dict, du_at: float, gen: int) -> None:
+    if gen != _CACHE_GEN:
+        return
+    json_bytes, gzip_bytes = _encode_payload(payload)
+    _CACHE.update({
+        "at": time.monotonic(),
+        "du_at": du_at,
+        "payload": payload,
+        "json_bytes": json_bytes,
+        "gzip_bytes": gzip_bytes,
+        "swr_json": b"",
+        "swr_gzip": b"",
+    })
+
+
+def _sync_cache_du_locked() -> None:
+    payload = _CACHE["payload"]
+    if payload is None or not payload.get("cluster", {}).get("connected"):
+        return
+    du_at = _current_du_at()
+    if du_at == _CACHE["du_at"]:
+        return
+    updated = _sync_du_into_payload(payload)
+    json_bytes, gzip_bytes = _encode_payload(updated)
+    _CACHE.update({
+        "du_at": du_at,
+        "payload": updated,
+        "json_bytes": json_bytes,
+        "gzip_bytes": gzip_bytes,
+        "swr_json": b"",
+        "swr_gzip": b"",
+    })
+
+
+def _run_probe_singleflight(force_du: bool = False, force_static: bool = False) -> dict:
+    """Execute one SSH probe at a time without holding ``_CACHE_LOCK`` across I/O."""
+    global _PROBE_IN_FLIGHT
+    with _PROBE_COND:
+        if _PROBE_IN_FLIGHT:
+            while _PROBE_IN_FLIGHT:
+                _PROBE_COND.wait()
+            with _CACHE_LOCK:
+                if _CACHE["payload"] is not None:
+                    _sync_cache_du_locked()
+                    return _CACHE["payload"]
+        _PROBE_IN_FLIGHT = True
+
+    try:
+        with _CACHE_LOCK:
+            gen = _CACHE_GEN
         try:
-            payload = _collect_ssh_metrics(force_du=force)
+            payload = _collect_ssh_metrics(force_du=force_du, force_static=force_static)
         except (OSError, json.JSONDecodeError, RuntimeError, subprocess.TimeoutExpired) as exc:
             payload = _disconnected_payload(str(exc))
             print(f"[madar-dashboard] SSH probe failed: {exc}")
-        _CACHE.update({"at": time.monotonic(), "payload": payload})
-        return payload
+        du_at = _current_du_at()
+        with _CACHE_LOCK:
+            _store_cache_locked(payload, du_at=du_at, gen=gen)
+            return _CACHE["payload"] or payload
+    finally:
+        with _PROBE_COND:
+            _PROBE_IN_FLIGHT = False
+            _PROBE_COND.notify_all()
+
+
+def _trigger_background_refresh(force_du: bool = False, force_static: bool = False) -> None:
+    with _PROBE_COND:
+        if _PROBE_IN_FLIGHT:
+            return
+    threading.Thread(
+        target=_run_probe_singleflight,
+        kwargs={"force_du": force_du, "force_static": force_static},
+        daemon=True,
+    ).start()
+
+
+def load_metrics_response(force: bool = False, accept_gzip: bool = False) -> tuple[dict, bytes, bool]:
+    """Return ``(payload_dict, serialized_bytes, is_gzipped)`` using SWR & singleflight."""
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        cached = _CACHE["payload"]
+        if not force and cached is not None:
+            connected = bool(cached.get("cluster", {}).get("connected"))
+            ttl = _CACHE_TTL_CONNECTED if connected else _CACHE_TTL_DISCONNECTED
+            age = now - _CACHE["at"]
+            if age < ttl:
+                _sync_cache_du_locked()
+                data = _CACHE["gzip_bytes"] if accept_gzip else _CACHE["json_bytes"]
+                return _CACHE["payload"], data, accept_gzip
+            if connected and age < _CACHE_STALE_TTL:
+                _sync_cache_du_locked()
+                if not _CACHE["swr_json"]:
+                    swr_payload = {**_CACHE["payload"], "cluster": {**_CACHE["payload"]["cluster"], "refreshing": True}}
+                    swr_json, swr_gzip = _encode_payload(swr_payload)
+                    _CACHE["swr_json"] = swr_json
+                    _CACHE["swr_gzip"] = swr_gzip
+                _trigger_background_refresh(force_du=False, force_static=False)
+                data = _CACHE["swr_gzip"] if accept_gzip else _CACHE["swr_json"]
+                return _CACHE["payload"], data, accept_gzip
+
+    payload = _run_probe_singleflight(force_du=force, force_static=force)
+    with _CACHE_LOCK:
+        if _CACHE["payload"] is payload and _CACHE["json_bytes"]:
+            data = _CACHE["gzip_bytes"] if accept_gzip else _CACHE["json_bytes"]
+            return payload, data, accept_gzip
+    raw, gz = _encode_payload(payload)
+    return payload, (gz if accept_gzip else raw), accept_gzip
+
+
+def load_metrics(force: bool = False) -> dict:
+    """Probe Madar over SSH and return disconnected state on failure."""
+    payload, _, _ = load_metrics_response(force=force, accept_gzip=False)
+    return payload
 
 
 _DISCONNECT_ERRORS = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)
+_STATIC_ASSETS: dict[str, dict] = {}
+_STATIC_LOCK = threading.Lock()
+_STATIC_SPEC = (
+    ("/index.html", "index.html", "text/html; charset=utf-8", True),
+    ("/styles.css", "styles.css", "text/css; charset=utf-8", True),
+    ("/app.js", "app.js", "application/javascript; charset=utf-8", True),
+    ("/logo.png", "logo.png", "image/png", False),
+)
+
+
+def _get_static_asset(url_path: str) -> dict | None:
+    target = "/index.html" if url_path == "/" else ("/logo.png" if url_path == "/favicon.ico" else url_path)
+    asset = _STATIC_ASSETS.get(target)
+    if asset is not None:
+        return asset
+    with _STATIC_LOCK:
+        if target in _STATIC_ASSETS:
+            return _STATIC_ASSETS[target]
+        for route, filename, content_type, compressible in _STATIC_SPEC:
+            if route == target:
+                file_path = ROOT / filename
+                if not file_path.is_file():
+                    return None
+                raw = file_path.read_bytes()
+                etag = f'"{hashlib.sha256(raw).hexdigest()[:16]}"'
+                gz = gzip.compress(raw, compresslevel=6) if compressible else b""
+                entry = {
+                    "raw": raw,
+                    "gzip": gz,
+                    "etag": etag,
+                    "content_type": content_type,
+                    "compressible": compressible,
+                }
+                _STATIC_ASSETS[route] = entry
+                return entry
+    return None
+
+
+def _warm_static_assets() -> None:
+    for route, _, _, _ in _STATIC_SPEC:
+        _get_static_asset(route)
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
-    def _write_bytes(self, payload: bytes, content_type: str, cache_control: str | None = None) -> None:
+    def _accepts_gzip(self) -> bool:
+        return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+
+    def _write_bytes(
+        self,
+        payload: bytes,
+        content_type: str,
+        cache_control: str | None = None,
+        etag: str | None = None,
+        is_gzip: bool = False,
+        vary_encoding: bool = False,
+    ) -> None:
         try:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             if cache_control:
                 self.send_header("Cache-Control", cache_control)
+            if etag:
+                self.send_header("ETag", etag)
+            if vary_encoding:
+                self.send_header("Vary", "Accept-Encoding")
+            if is_gzip:
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(payload)))
             super().end_headers()
             self.wfile.write(payload)
+        except _DISCONNECT_ERRORS:
+            return
+
+    def _write_not_modified(self, etag: str) -> None:
+        try:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", "0")
+            super().end_headers()
         except _DISCONNECT_ERRORS:
             return
 
@@ -1677,27 +2026,54 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - stdlib API name
         parsed = urlparse(self.path)
         path = parsed.path
+        accept_gzip = self._accepts_gzip()
+
         if path == "/api/metrics":
             query = parse_qs(parsed.query)
             force = query.get("force", ["0"])[0] == "1"
-            payload = json.dumps(load_metrics(force=force), ensure_ascii=False).encode("utf-8")
-            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            _, data, is_gz = load_metrics_response(force=force, accept_gzip=accept_gzip)
+            self._write_bytes(
+                data,
+                "application/json; charset=utf-8",
+                cache_control="no-store",
+                is_gzip=is_gz,
+                vary_encoding=True,
+            )
             return
 
         if path == "/api/settings":
-            payload = json.dumps(get_settings(), ensure_ascii=False).encode("utf-8")
-            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            raw = json.dumps(get_settings(), ensure_ascii=False).encode("utf-8")
+            data = gzip.compress(raw, compresslevel=5) if accept_gzip and len(raw) > 256 else raw
+            is_gz = data is not raw
+            self._write_bytes(
+                data,
+                "application/json; charset=utf-8",
+                cache_control="no-store",
+                is_gzip=is_gz,
+                vary_encoding=True,
+            )
             return
 
         if path == "/health":
             self._write_bytes(b'{"status":"ok"}', "application/json")
             return
 
-        if path == "/favicon.ico":
-            logo_file = ROOT / "logo.png"
-            if logo_file.exists():
-                self._write_bytes(logo_file.read_bytes(), "image/png")
+        asset = _get_static_asset(path)
+        if asset is not None:
+            if self.headers.get("If-None-Match") == asset["etag"]:
+                self._write_not_modified(asset["etag"])
                 return
+            use_gz = accept_gzip and asset["compressible"] and bool(asset["gzip"])
+            data = asset["gzip"] if use_gz else asset["raw"]
+            self._write_bytes(
+                data,
+                asset["content_type"],
+                cache_control="no-cache",
+                etag=asset["etag"],
+                is_gzip=use_gz,
+                vary_encoding=asset["compressible"],
+            )
+            return
 
         try:
             super().do_GET()
@@ -1727,20 +2103,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 - stdlib API name
         path = urlparse(self.path).path
+        accept_gzip = self._accepts_gzip()
         if path == "/api/settings":
             body = self._read_json_body()
             if body is None:
                 return
             updated = update_settings(body)
-            payload = json.dumps(updated, ensure_ascii=False).encode("utf-8")
-            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            raw = json.dumps(updated, ensure_ascii=False).encode("utf-8")
+            data = gzip.compress(raw, compresslevel=5) if accept_gzip and len(raw) > 256 else raw
+            self._write_bytes(
+                data,
+                "application/json; charset=utf-8",
+                cache_control="no-store",
+                is_gzip=data is not raw,
+                vary_encoding=True,
+            )
             return
         if path == "/api/test-connection":
             body = self._read_json_body()
             if body is None:
                 return
-            payload = json.dumps(test_connection(body), ensure_ascii=False).encode("utf-8")
-            self._write_bytes(payload, "application/json; charset=utf-8", cache_control="no-store")
+            raw = json.dumps(test_connection(body), ensure_ascii=False).encode("utf-8")
+            data = gzip.compress(raw, compresslevel=5) if accept_gzip and len(raw) > 256 else raw
+            self._write_bytes(
+                data,
+                "application/json; charset=utf-8",
+                cache_control="no-store",
+                is_gzip=data is not raw,
+                vary_encoding=True,
+            )
             return
         self.send_error(404)
 
@@ -1757,14 +2148,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
     def log_message(self, fmt, *args):
-        if os.environ.get("MADAR_DASHBOARD_QUIET") != "1":
-            super().log_message(fmt, *args)
+        if os.environ.get("MADAR_DASHBOARD_QUIET") == "1" or sys.stderr is None:
+            return
+        super().log_message(fmt, *args)
 
 
 class DashboardServer(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets two processes bind the same port, which
     # would make the free-port probe succeed on a port that is already taken.
     allow_reuse_address = os.name != "nt"
+    daemon_threads = True
 
     def server_bind(self):
         if os.name == "nt":
@@ -1785,21 +2178,106 @@ def bind_free_port(host: str, start: int, attempts: int = PORT_PROBE_LIMIT) -> D
     )
 
 
-_load_saved_settings()
+def _open_settings_folder() -> None:
+    folder = SETTINGS_FILE.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(str(folder))  # type: ignore[attr-defined]
 
 
-if __name__ == "__main__":
+def _parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Madar HPC Resource Monitor")
+    parser.add_argument("--host", default=HOST, help="Bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=PORT, help="Starting port to probe (default: 8766)")
+    parser.add_argument("--tray", action="store_true", help="Enable Windows system tray icon")
+    parser.add_argument("--no-tray", action="store_true", help="Disable Windows system tray icon")
+    parser.add_argument("--browser", action="store_true", help="Open dashboard in browser on startup")
+    parser.add_argument("--no-browser", action="store_true", help="Do not open browser on startup")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    _configure_stdio_for_gui()
+    args = _parse_cli_args(argv)
+    use_tray = os.name == "nt" and ((IS_FROZEN and not args.no_tray) or args.tray)
+    open_browser = (IS_FROZEN and not args.no_browser) or args.browser
+
+    guard = None
+    if use_tray:
+        try:
+            from tray_win import SingleInstanceGuard
+
+            guard = SingleInstanceGuard(DATA_DIR / "instance.json")
+            if not guard.acquire():
+                if open_browser:
+                    guard.focus_existing()
+                return
+        except Exception as exc:
+            print(f"[madar-dashboard] single-instance guard disabled: {exc}")
+            guard = None
+
     mimetypes.add_type("application/javascript", ".js")
-    server = bind_free_port(HOST, PORT)
+    _warm_static_assets()
+
+    server = bind_free_port(args.host, args.port)
     port = server.server_address[1]
-    if port != PORT:
-        print(f"Port {PORT} is in use, using {port} instead")
-    print(f"Madar dashboard running at http://{HOST}:{port}")
+    url = f"http://{args.host}:{port}"
+    if guard is not None:
+        guard.write_instance_info(url)
+
+    # Pre-warm SSH metrics in the background before the browser finishes loading.
+    _trigger_background_refresh(force_du=False, force_static=False)
+
+    if port != args.port:
+        print(f"Port {args.port} is in use, using {port} instead")
+    print(f"Madar dashboard running at {url}")
     print(f"SSH probe host={SSH_HOST}")
     print(f"Settings file: {SETTINGS_FILE}{'' if SETTINGS_FILE.exists() else ' (not created yet)'}")
+
+    if open_browser:
+        threading.Timer(0.12, lambda: webbrowser.open(url)).start()
+
+    if use_tray:
+        try:
+            from tray_win import TrayController
+
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            def _shutdown():
+                server.shutdown()
+
+            icon_path = ROOT / "madar.ico"
+            tray = TrayController(
+                url=url,
+                icon_path=icon_path if icon_path.exists() else None,
+                on_refresh=lambda: _trigger_background_refresh(force_du=True, force_static=True),
+                on_open_settings_dir=_open_settings_folder,
+                on_exit=_shutdown,
+            )
+            try:
+                tray.run()
+            finally:
+                server.shutdown()
+                server.server_close()
+                if guard is not None:
+                    guard.release()
+            return
+        except Exception as exc:
+            print(f"[madar-dashboard] tray mode unavailable, falling back to server loop: {exc}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping dashboard")
     finally:
         server.server_close()
+        if guard is not None:
+            guard.release()
+
+
+_load_saved_settings()
+
+
+if __name__ == "__main__":
+    main()

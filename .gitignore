@@ -10,6 +10,13 @@ venv/
 
 # Local runtime output
 *.log
+*.log.old
 metrics.local.json
 settings.local.json
 settings.local.json.tmp
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+madar.ico

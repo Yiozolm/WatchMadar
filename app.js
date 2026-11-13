@@ -16,6 +16,9 @@ const state = {
   timer: null,
   activeView: "overview",
   inFlight: false,
+  dataGen: 0,
+  renderedGen: {},
+  lastFetchAt: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -533,6 +536,7 @@ function setLanguage(lang, showNotification = true) {
   } catch (_) {}
   applyStaticI18n();
   updatePageHeader();
+  state.renderedGen = {};
   if (state.data) {
     render();
   }
@@ -700,7 +704,8 @@ function updatePageHeader() {
   $("#pageSubtitle").textContent = meta.subtitle();
 }
 
-function renderStatsAndOverview() {
+function renderGlobalChrome() {
+  if (!state.data) return;
   const { cluster, storage, gpus = [] } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   const intervalLabel = formatIntervalLabel(state.refreshMs);
@@ -709,29 +714,70 @@ function renderStatsAndOverview() {
   $("#sidebarConnection")?.classList.toggle("disconnected", !isLive);
   $("#topRefreshState")?.classList.toggle("disconnected", !isLive);
   $("#clusterBadge")?.classList.toggle("disconnected", !isLive);
-  $("#storageHealthState")?.classList.toggle("disconnected", !isLive);
-  $("#storageDetailHealth")?.classList.toggle("disconnected", !isLive);
 
   $("#collectorStatus").textContent = isLive ? t("已连接", "Connected") : disconnText;
   $("#collectorDetail").textContent = isLive
     ? `Slurm probe · ${intervalLabel}`
     : localizeBackendText(cluster.data_error) || t("未能获取到服务器数据", "Failed to fetch server metrics");
-  $("#metricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : disconnText;
-  $("#gpuPageMetricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : disconnText;
-
   updatePageHeader();
 
   if (!isLive) {
     $("#sidebarUser").textContent = "SSH User";
     $("#sidebarHome").textContent = disconnText;
-    $("#gpuOnline").textContent = "—";
-    $("#gpuTotal").textContent = "—";
     $("#gpuNavCount").textContent = "—";
     $("#storageNavCount").textContent = "—";
-    $("#gpuUtil").textContent = "—";
-    $("#activeJobs").textContent = "—";
     $("#jobNavCount").textContent = "—";
     $("#priorityNavBadge").textContent = "—";
+    $("#lastUpdated").textContent = disconnText;
+    $("#uptime").textContent = "—";
+    $("#clusterStatus").textContent = disconnText;
+    return;
+  }
+
+  const sshUser = storage.user || "";
+  const homePath = storage.home_path || (sshUser ? `/home/${sshUser}` : "~");
+  $("#sidebarUser").textContent = userLabel(sshUser);
+  $("#sidebarHome").textContent = homePath;
+
+  const totalGpus = Number(cluster.gpu_total) || gpus.length || 0;
+  const maintCount = Number(cluster.gpu_maintenance) || 0;
+  const homeUsedGb = storage.home_used_gb ?? storage.used_tb * 1000;
+  const quotaGb = storage.home_quota_gb || HOME_QUOTA_GB;
+  const usedQuotaPct = Math.min((homeUsedGb / quotaGb) * 100, 100);
+  const subdirs = storage.subdirs || [];
+  const isInitialScan = Boolean(storage.scanning && homeUsedGb === 0 && !subdirs.length);
+  const myPrio = state.data.priority?.summary?.my_current_priority || 0;
+
+  $("#gpuNavCount").textContent = totalGpus;
+  $("#jobNavCount").textContent = cluster.active_jobs + cluster.queued_jobs;
+  $("#priorityNavBadge").textContent = myPrio ? `${myPrio}` : "—";
+  $("#storageNavCount").textContent = isInitialScan ? "…" : `${Math.round(usedQuotaPct)}%`;
+  $("#lastUpdated").textContent = formatTime(cluster.last_updated);
+  $("#uptime").textContent = cluster.uptime;
+  $("#clusterStatus").textContent =
+    maintCount > 0
+      ? isEn()
+        ? `Healthy (${maintCount} maint)`
+        : `运行正常 (${maintCount}卡维护)`
+      : cluster.status === "healthy"
+        ? t("运行正常", "Healthy")
+        : t("需关注", "Attention");
+}
+
+function renderStatsAndOverview() {
+  const { cluster, storage, gpus = [] } = state.data;
+  const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
+  const intervalLabel = formatIntervalLabel(state.refreshMs);
+  const disconnText = t("未连接", "Disconnected");
+
+  $("#storageHealthState")?.classList.toggle("disconnected", !isLive);
+  $("#metricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : disconnText;
+
+  if (!isLive) {
+    $("#gpuOnline").textContent = "—";
+    $("#gpuTotal").textContent = "—";
+    $("#gpuUtil").textContent = "—";
+    $("#activeJobs").textContent = "—";
     $("#queuedJobsFoot").textContent = "— queued";
     $("#gpuFootStatus").textContent = disconnText;
     $("#gpuFootStatus").className = "trend up";
@@ -750,9 +796,6 @@ function renderStatsAndOverview() {
     $("#storageTotal2").textContent = t("总配额 50 GB", "Total quota 50 GB");
     $("#storageHomeFoot").innerHTML = t("主目录 <b>—</b>", "Home <b>—</b>");
     $("#storageHealthState").innerHTML = `<i></i>${disconnText}`;
-    $("#lastUpdated").textContent = disconnText;
-    $("#uptime").textContent = "—";
-    $("#clusterStatus").textContent = disconnText;
     $("#utilSpark").innerHTML = "";
 
     // Overview GPU reset
@@ -1017,6 +1060,8 @@ function renderStatsAndOverview() {
 function renderGpusPage() {
   const { cluster, gpus = [] } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
+  const intervalLabel = formatIntervalLabel(state.refreshMs);
+  $("#gpuPageMetricNote").textContent = isLive ? `Slurm GPU allocation · ${intervalLabel}` : t("未连接", "Disconnected");
   if (!isLive) {
     $("#gpuPageOnline").textContent = "—";
     $("#gpuPageTotal").textContent = "—";
@@ -1210,6 +1255,7 @@ function renderStoragePage() {
   const { cluster, storage } = state.data;
   const isLive = Boolean(cluster.connected && cluster.data_source === "ssh");
   const disconnText = t("未连接", "Disconnected");
+  $("#storageDetailHealth")?.classList.toggle("disconnected", !isLive);
   renderProjectStorage(isLive ? storage.project : null);
   if (!isLive) {
     $("#stPageUsed").textContent = "—";
@@ -1547,6 +1593,16 @@ function renderJobsPage() {
       })
       .join("");
   }
+
+  renderJobsTableOnly();
+}
+
+function renderJobsTableOnly() {
+  if (!state.data) return;
+  const { cluster, jobs = [], storage, priority } = state.data;
+  if (!cluster?.connected || cluster.data_source !== "ssh") return;
+  const sshUser = storage?.user || "";
+  const primaryAcct = priority?.group?.primary_account || "";
 
   let activeFilterLabel = "";
   if (state.selectedMember !== "all") {
@@ -2075,14 +2131,28 @@ function renderSettingsDiag() {
   }
 }
 
+const VIEW_RENDERERS = {
+  overview: renderStatsAndOverview,
+  gpu: renderGpusPage,
+  storage: renderStoragePage,
+  jobs: renderJobsPage,
+  priority: renderPriorityPage,
+  settings: renderSettingsDiag,
+};
+
+function renderView(view, force = false) {
+  if (!state.data) return;
+  const renderer = VIEW_RENDERERS[view];
+  if (!renderer) return;
+  if (!force && state.renderedGen[view] === state.dataGen) return;
+  renderer();
+  state.renderedGen[view] = state.dataGen;
+}
+
 function render() {
   if (!state.data) return;
-  renderStatsAndOverview();
-  renderGpusPage();
-  renderStoragePage();
-  renderJobsPage();
-  renderPriorityPage();
-  renderSettingsDiag();
+  renderGlobalChrome();
+  renderView(state.activeView, true);
 }
 
 async function fetchMetrics(showToast = false, force = false) {
@@ -2093,10 +2163,16 @@ async function fetchMetrics(showToast = false, force = false) {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
+    state.dataGen += 1;
+    state.lastFetchAt = Date.now();
     render();
     if (state.data.storage?.scanning) {
       clearTimeout(fetchMetrics.scanTimer);
       fetchMetrics.scanTimer = setTimeout(() => fetchMetrics(false, false), 3500);
+    }
+    if (state.data.cluster?.refreshing) {
+      clearTimeout(fetchMetrics.swrTimer);
+      fetchMetrics.swrTimer = setTimeout(() => fetchMetrics(false, false), 1500);
     }
     if (showToast) {
       const isLive = Boolean(state.data.cluster?.connected);
@@ -2111,6 +2187,7 @@ async function fetchMetrics(showToast = false, force = false) {
       ...DISCONNECTED_DATA,
       cluster: { ...DISCONNECTED_DATA.cluster, data_error: `无法连接本地采集服务 (${error.message})` },
     };
+    state.dataGen += 1;
     render();
     if (showToast) showToastMessage(t("未连接：请检查采集服务是否运行", "Disconnected: Please check if collector service is running"), true);
   } finally {
@@ -2142,7 +2219,9 @@ async function fetchSettings() {
 function updateRefreshTimer(ms) {
   state.refreshMs = ms;
   clearInterval(state.timer);
-  state.timer = ms > 0 ? setInterval(() => fetchMetrics(false), ms) : null;
+  state.timer = ms > 0 ? setInterval(() => {
+    if (!document.hidden) fetchMetrics(false);
+  }, ms) : null;
   const footerLabel = $("#footerRefreshLabel");
   if (footerLabel) footerLabel.textContent = ms > 0 ? `${ms / 1000}s` : "off";
   renderSettingsDiag();
@@ -2272,6 +2351,7 @@ function setView(view, options = {}) {
   }
 
   $(".main-content")?.scrollTo({ top: 0, behavior: "instant" });
+  renderView(targetView);
   if (targetView === "settings") fetchSettings();
 }
 
@@ -2280,8 +2360,8 @@ function bindEvents() {
     const jumpNodeCard = event.target.closest("[data-jump-node]");
     if (jumpNodeCard) {
       state.selectedNode = jumpNodeCard.dataset.jumpNode;
+      state.renderedGen.gpu = 0;
       setView("gpu");
-      renderGpusPage();
       return;
     }
 
@@ -2289,7 +2369,7 @@ function bindEvents() {
     if (selectNodeCard) {
       const nodeName = selectNodeCard.dataset.selectNode;
       state.selectedNode = state.selectedNode === nodeName ? "all" : nodeName;
-      renderGpusPage();
+      renderView("gpu", true);
       return;
     }
 
@@ -2297,8 +2377,12 @@ function bindEvents() {
     if (selectMemberEl) {
       const memberName = selectMemberEl.dataset.selectMember;
       state.selectedMember = state.selectedMember === memberName ? "all" : memberName;
-      if (state.activeView !== "jobs") setView("jobs");
-      renderJobsPage();
+      state.renderedGen.jobs = 0;
+      if (state.activeView !== "jobs") {
+        setView("jobs");
+      } else {
+        renderView("jobs", true);
+      }
       return;
     }
 
@@ -2402,9 +2486,11 @@ function bindEvents() {
     })
   );
 
+  let jobSearchTimer = null;
   $("#jobSearchInput")?.addEventListener("input", (event) => {
     state.jobSearch = event.target.value || "";
-    renderJobsPage();
+    clearTimeout(jobSearchTimer);
+    jobSearchTimer = setTimeout(() => renderJobsTableOnly(), 80);
   });
 
   $("#rescanStorageBtn")?.addEventListener("click", () => {
@@ -2431,6 +2517,12 @@ function bindEvents() {
       setView(hashView, { updateHash: false });
     }
   });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.refreshMs > 0 && Date.now() - state.lastFetchAt >= state.refreshMs) {
+      fetchMetrics(false, false);
+    }
+  });
 }
 
 applyStaticI18n();
@@ -2440,4 +2532,6 @@ setView(VIEW_META[initialHash] ? initialHash : "overview", { updateHash: false }
 bindEvents();
 fetchSettings();
 fetchMetrics();
-state.timer = setInterval(() => fetchMetrics(false), state.refreshMs);
+state.timer = setInterval(() => {
+  if (!document.hidden) fetchMetrics(false);
+}, state.refreshMs);
