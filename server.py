@@ -120,6 +120,7 @@ _CACHE_STALE_TTL = 180.0
 _KV_RE = re.compile(r"([A-Za-z][A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9_]*=|$)")
 _GRES_GPU_RE = re.compile(r"gpu(?::[^:,\s]+)*:(\d+)")
 _TRES_GPU_RE = re.compile(r"(?:^|,)gres/gpu=(\d+)")
+_TRES_CPU_RE = re.compile(r"(?:^|,)cpu=(\d+)")
 _REQ_GPU_RE = re.compile(r"(?:gpu:)[^:|]+:(\d+)$")
 _REQ_GPU_SIMPLE_RE = re.compile(r"gpu:(\d+)")
 _REASON_BRACKET_RE = re.compile(r"\s*\[[^\]]*\]\s*$")
@@ -153,6 +154,7 @@ def _disconnected_payload(error: str = "") -> dict:
             "gpu_maintenance": 0,
             "gpu_restricted": 0,
             "gpu_idle": 0,
+            "gpu_stranded": 0,
             "gpu_utilization": 0,
             "active_jobs": 0,
             "queued_jobs": 0,
@@ -246,6 +248,11 @@ def _gpu_count_from_gres(gres: str) -> int:
 
 def _gpu_count_from_tres(tres: str) -> int:
     match = _TRES_GPU_RE.search(tres or "")
+    return _number(match.group(1) if match else "0")
+
+
+def _cpu_count_from_tres(tres: str) -> int:
+    match = _TRES_CPU_RE.search(tres or "")
     return _number(match.group(1) if match else "0")
 
 
@@ -1039,6 +1046,9 @@ def _parse_nodes(
         cfg_tres = fields.get("CfgTRES", "")
         total = _gpu_count_from_tres(cfg_tres) or _gpu_count_from_gres(gres)
         allocated = _gpu_count_from_tres(fields.get("AllocTRES", ""))
+        cpu_total = _cpu_count_from_tres(cfg_tres)
+        cpu_allocated = min(_cpu_count_from_tres(fields.get("AllocTRES", "")), cpu_total)
+        cpu_free = cpu_total - cpu_allocated
         state = fields.get("State", "").upper()
         reason = fields.get("Reason", "")
         node_partitions = [p.strip() for p in fields.get("Partitions", "").split(",") if p.strip()]
@@ -1048,11 +1058,23 @@ def _parse_nodes(
         for job in node_jobs:
             allocated_jobs.extend([job] * max(job["gpus"], 1))
         model = _model_from_gres(gres)
+        # An idle GPU is "stranded" when the node no longer has its per-GPU
+        # share of cores left (64 cores / 8 GPUs = 8 on Madar): jobs asking
+        # for more cores per GPU use up the CPUs and leave GPUs unschedulable.
+        cpus_per_gpu = cpu_total // total if total else 0
+        idle_gpus = max(total - allocated, 0) if state_info["mode"] == "normal" else 0
+        usable_gpus = cpu_free // cpus_per_gpu if cpus_per_gpu else idle_gpus
+        stranded_gpus = max(idle_gpus - usable_gpus, 0)
         nodes.append({
             "name": node_name,
             "model": model,
             "total": total,
             "allocated": allocated,
+            "cpu_total": cpu_total,
+            "cpu_allocated": cpu_allocated,
+            "cpu_free": cpu_free,
+            "cpus_per_gpu": cpus_per_gpu,
+            "stranded_gpus": stranded_gpus,
             "state": state,
             "partitions": node_partitions,
             "mode": state_info["mode"],
@@ -1574,6 +1596,7 @@ def _collect_ssh_metrics(force_du: bool = False, force_static: bool = False) -> 
     restricted_gpus = sum(1 for gpu in gpus if gpu["status"] == "maintenance" and gpu.get("substatus") == "restricted")
     unavailable_gpus = maintenance_gpus + restricted_gpus
     idle_gpus = sum(1 for gpu in gpus if gpu["status"] == "idle")
+    stranded_gpus = min(sum(node.get("stranded_gpus", 0) for node in nodes), idle_gpus)
     online_gpus = max(total_gpus - unavailable_gpus, 0)
     maintenance_nodes = [
         {"name": node["name"], "state": node["state"], "mode": node["mode"], "reason": node["reason"]}
@@ -1597,6 +1620,7 @@ def _collect_ssh_metrics(force_du: bool = False, force_static: bool = False) -> 
             "gpu_maintenance": maintenance_gpus,
             "gpu_restricted": restricted_gpus,
             "gpu_idle": idle_gpus,
+            "gpu_stranded": stranded_gpus,
             "maintenance_nodes": maintenance_nodes,
             "gpu_utilization": round(allocated_gpus / online_gpus * 100) if online_gpus else 0,
             "active_jobs": active_jobs,

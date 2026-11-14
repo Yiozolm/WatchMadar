@@ -84,6 +84,7 @@ body.overview-locked .main-content { overflow:hidden; }
 .node-mini-model { font-size:10px; color:var(--muted); font-family:"DM Sans",sans-serif; font-weight:400; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .node-mini-meta { display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--muted); gap:6px; }
 .node-mini-meta b { color:var(--text-2); font-weight:500; }
+.node-stranded { color:var(--orange); font-weight:600; white-space:nowrap; cursor:help; }
 .btn-chip { padding:6px 11px; border-radius:7px; border:1px solid var(--border); background:rgba(164,198,224,.07); color:var(--text-2); font-size:11px; transition:.2s; }
 .btn-chip:hover,.btn-chip.selected { border-color:var(--green); color:var(--green); background:rgba(56,214,161,.1); }
 .filter-tag { font-size:12px; color:var(--green); font-weight:500; margin-left:8px; }

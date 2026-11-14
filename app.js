@@ -583,6 +583,7 @@ const DISCONNECTED_DATA = {
     gpu_maintenance: 0,
     gpu_restricted: 0,
     gpu_idle: 0,
+    gpu_stranded: 0,
     gpu_utilization: 0,
     active_jobs: 0,
     queued_jobs: 0,
@@ -910,7 +911,15 @@ function renderStatsAndOverview() {
     ? `${cluster.gpu_utilization}% of online GPUs`
     : `占可用卡 ${cluster.gpu_utilization}%`;
   $("#ovGpuIdle").textContent = isEn() ? `${idleCount} GPUs` : `${idleCount} 张`;
-  $("#ovGpuIdleSub").textContent = idleCount > 0 ? t("可立即调度任务", "Ready for immediate jobs") : t("当前无空闲卡", "No idle GPUs available");
+  const ovStranded = Number(cluster.gpu_stranded) || 0;
+  $("#ovGpuIdleSub").textContent =
+    idleCount === 0
+      ? t("当前无空闲卡", "No idle GPUs available")
+      : ovStranded
+        ? isEn()
+          ? `${ovStranded} of them short of CPU cores`
+          : `其中 ${ovStranded} 张因 CPU 不足无法调度`
+        : t("可立即调度任务", "Ready for immediate jobs");
   $("#ovGpuMaint").textContent = isEn() ? `${maintCount} GPUs` : `${maintCount} 张`;
   const maintNodes = nodes.filter((n) => n.mode === "down" || n.mode === "drain" || n.mode === "reserved");
   $("#ovGpuMaintSub").textContent = maintNodes.length
@@ -1095,6 +1104,17 @@ function renderGpusPage() {
   $("#gpuPageBusy").textContent = busyCount;
   $("#gpuPageUtil").textContent = cluster.gpu_utilization;
   $("#gpuPageIdle").textContent = idleCount;
+  const strandedCount = Number(cluster.gpu_stranded) || 0;
+  const idleFoot = $("#gpuPageIdleFoot");
+  idleFoot.textContent = strandedCount
+    ? isEn()
+      ? `${strandedCount} short of CPU`
+      : `${strandedCount} 张缺 CPU`
+    : "AVAILABLE";
+  idleFoot.className = strandedCount ? "trend warn" : "trend neutral";
+  idleFoot.title = strandedCount
+    ? t("这些卡空着，但所在节点剩余 CPU 核不足每卡配比，排队任务放不进去", "These GPUs are idle but their nodes lack the per-GPU share of free CPU cores, so queued jobs cannot use them")
+    : "";
   $("#gpuPageUnavail").textContent = maintCount + restrictedCount;
   $("#gpuPageUnavailFoot").textContent = isEn()
     ? `${maintCount} maint · ${restrictedCount} restricted (rcadmin)`
@@ -1133,6 +1153,22 @@ function renderGpusPage() {
       const allocLabel = isEn()
         ? `Allocated <b>${node.allocated} / ${node.total}</b> GPUs`
         : `占用 <b>${node.allocated} / ${node.total}</b> 卡`;
+      const cpuTotal = Number(node.cpu_total) || 0;
+      const cpuFree = Number(node.cpu_free) || 0;
+      const stranded = Number(node.stranded_gpus) || 0;
+      const cpuLabel = cpuTotal
+        ? isEn()
+          ? `CPU <b>${node.cpu_allocated} / ${cpuTotal}</b> · ${cpuFree} free`
+          : `CPU <b>${node.cpu_allocated} / ${cpuTotal}</b> 核 · 剩 ${cpuFree}`
+        : "";
+      const strandedTip = isEn()
+        ? `${stranded} idle GPU(s) cannot be scheduled: only ${cpuFree} free cores, below the ${node.cpus_per_gpu} cores per GPU on this node.`
+        : `${stranded} 张空闲卡无法调度：仅剩 ${cpuFree} 核，不足本节点每卡 ${node.cpus_per_gpu} 核的配比。`;
+      const strandedLabel = stranded
+        ? `<span class="node-stranded" title="${escapeHtml(strandedTip)}">${
+            isEn() ? `⚠ ${stranded} idle GPU${stranded > 1 ? "s" : ""} short of CPU` : `⚠ ${stranded} 张空卡缺 CPU`
+          }</span>`
+        : "";
       return `<div class="node-detail-card ${selectedCls}" data-select-node="${escapeHtml(node.name)}">
         <div class="node-mini-top">
           <div class="node-mini-name"><span>${escapeHtml(node.name)}</span><span class="node-mini-model">${escapeHtml(node.model)}</span></div>
@@ -1143,6 +1179,7 @@ function renderGpusPage() {
           <span>${allocLabel}</span>
           <span>${escapeHtml(reasonText)}</span>
         </div>
+        ${cpuLabel ? `<div class="node-mini-meta"><span>${cpuLabel}</span>${strandedLabel}</div>` : ""}
       </div>`;
     })
     .join("");
