@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "madar-dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["server.py", "--port", "8799", "--no-browser", "--no-tray"],
+      "port": 8799
+    }
+  ]
+}

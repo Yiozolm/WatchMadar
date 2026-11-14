@@ -9,7 +9,7 @@ cd madar_dashboard
 python server.py
 ```
 
-然后访问启动时终端打印的地址（默认 <http://127.0.0.1:8766>）。服务会从 8766 开始向上探测第一个未被占用的端口，起始端口可用环境变量 `MADAR_DASHBOARD_PORT` 修改。页面默认每 **1 分钟**自动通过 SSH 刷新（可在"采集设置"里改为 15 秒到 5 分钟，或暂停），也可以点击右上角按钮立即刷新。默认使用 `~/.ssh/config` 中名为 `madar` 的主机别名。
+然后访问启动时终端打印的地址（默认 [http://127.0.0.1:8766](http://127.0.0.1:8766)）。服务会从 8766 开始向上探测第一个未被占用的端口，起始端口可用环境变量 `MADAR_DASHBOARD_PORT` 修改。页面默认每 **1 分钟**自动通过 SSH 刷新（可在"采集设置"里改为 15 秒到 5 分钟，或暂停），也可以点击右上角按钮立即刷新。默认使用 `~/.ssh/config` 中名为 `madar` 的主机别名。
 
 ## 打包为独立 EXE（Windows）
 
@@ -71,4 +71,3 @@ python server.py
 - `GET /health`：健康检查
 - `GET /api/settings` / `POST /api/settings`：读取 / 保存采集设置
 - `POST /api/test-connection`：用给定（未保存）的 SSH 设置试连一次，返回登录用户、登录节点、耗时或失败原因
-
